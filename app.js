@@ -3,7 +3,8 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.4';
+  var VERSION = '1.4.1';
+  var ChatBridge = window.AgendaChatBridge;
 
   /* =========================================================
      Utilità DOM
@@ -1232,6 +1233,210 @@
   }
 
   /* =========================================================
+     ChatGPT ↔ Agenda: scambio esplicito via JSON / link con frammento.
+     Nessun token, backend o salvataggio sulla repo.
+     ========================================================= */
+  var CHAT_UNDO_KEY = 'agenda.chatgpt.last-import.v1';
+  var pendingChatLink = null;
+
+  function copyPlainText(value) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(value).catch(function () { return copyFallback(value); });
+    }
+    return copyFallback(value);
+  }
+  function copyFallback(value) {
+    var field = h('textarea', { readonly: true });
+    field.value = value;
+    field.style.cssText = 'position:fixed;top:5px;left:5px;opacity:.01;z-index:9999';
+    document.body.append(field);
+    field.focus(); field.select();
+    try {
+      if (!document.execCommand('copy')) throw new Error('Copia non disponibile');
+    } finally { field.remove(); }
+    return Promise.resolve();
+  }
+  function chatUndoInfo() {
+    try {
+      var v = JSON.parse(localStorage.getItem(CHAT_UNDO_KEY) || 'null');
+      if (v && typeof v.before === 'string' && typeof v.after === 'string') return v;
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  async function undoChatImport() {
+    var old = chatUndoInfo();
+    if (!old) { toast('Nessuna importazione ripristinabile'); return; }
+    if (JSON.stringify(state) !== old.after) {
+      toast('Agenda modificata dopo l’importazione. Usa il backup per tornare indietro.', 5500);
+      return;
+    }
+    var choice = await choose('Ripristinare gli impegni com’erano prima dell’ultima importazione ChatGPT?', [
+      { label: 'Ripristina', value: 'yes' }, { label: 'Annulla', value: null, kind: 'ghost' }]);
+    if (choice !== 'yes') return;
+    try {
+      localStorage.setItem(KEY, old.before);
+      localStorage.removeItem(CHAT_UNDO_KEY);
+      state = L.migrate(JSON.parse(old.before));
+      closeSheet(); render(); toast('Ultima importazione annullata');
+    } catch (e) { console.error(e); toast('Ripristino non riuscito: memoria non disponibile', 4500); }
+  }
+  function chatItemLabel(it) {
+    if (!it) return '';
+    return (it.date || '') + (it.time ? ' · ' + it.time : '') + ' · ' + (SECTIONS[it.type] ? SECTIONS[it.type].singular : it.type) + ' · ' + it.title;
+  }
+  function previewChatPlan(raw) {
+    var parsed, rows;
+    try { parsed = ChatBridge.parse(raw); rows = ChatBridge.analyze(state, parsed); }
+    catch (e) { openChatBridge(raw, e.message); return; }
+
+    var selected = new Set(rows.filter(function (r) { return r.status === 'ready' && r.op !== 'delete'; })
+      .map(function (r) { return r.index; }));
+    var summary = h('p', { class: 'chat-count' });
+    var commit = h('button', { type: 'button', class: 'btn primary' }, 'Applica selezionati');
+    function updateSummary() {
+      var chosen = rows.filter(function (r) { return selected.has(r.index); });
+      var a = chosen.filter(function (r) { return r.op === 'add'; }).length;
+      var u = chosen.filter(function (r) { return r.op === 'update'; }).length;
+      var d = chosen.filter(function (r) { return r.op === 'delete'; }).length;
+      summary.textContent = a + ' aggiunte · ' + u + ' modifiche · ' + d + ' eliminazioni';
+      commit.disabled = !chosen.length;
+    }
+    var list = h('div', { class: 'chat-operations' }, rows.map(function (r) {
+      var typeLabel = r.op === 'add' ? 'Aggiungi' : r.op === 'update' ? 'Modifica' : 'Elimina';
+      var check = h('input', { type: 'checkbox', checked: selected.has(r.index), disabled: r.status === 'blocked' });
+      check.addEventListener('change', function () {
+        if (check.checked) selected.add(r.index); else selected.delete(r.index);
+        updateSummary();
+      });
+      var title = r.next ? chatItemLabel(r.next) : chatItemLabel(r.current);
+      var change = r.op === 'update' && r.current ? 'Prima: ' + chatItemLabel(r.current) : '';
+      var note = r.op !== 'delete' && r.patch.note ? 'Nota: ' + r.patch.note : '';
+      return h('label', { class: 'chat-operation' + (r.op === 'delete' ? ' chat-delete' : '') + (r.status !== 'ready' ? ' chat-notice' : '') },
+        check,
+        h('span', { class: 'chat-op-body' },
+          h('span', { class: 'chat-op-kicker' }, (r.index + 1) + '. ' + typeLabel),
+          h('strong', null, title),
+          change ? h('span', { class: 'chat-op-sub' }, change) : null,
+          note ? h('span', { class: 'chat-op-sub' }, note) : null,
+          r.info ? h('span', { class: 'chat-op-warning' }, r.info) : null));
+    }));
+    commit.addEventListener('click', async function () {
+      var ids = Array.from(selected);
+      if (!ids.length) return;
+      if (rows.some(function (r) { return selected.has(r.index) && r.op === 'delete'; })) {
+        var sure = await choose('Eliminare gli impegni selezionati? Verranno tolte soltanto queste voci, non le altre.', [
+          { label: 'Conferma eliminazioni', value: 'yes', kind: 'danger' }, { label: 'Torna al piano', value: null, kind: 'ghost' }]);
+        if (sure !== 'yes') return;
+      }
+      try {
+        var result = ChatBridge.apply(state, parsed, ids);
+        var before = JSON.stringify(state), after = JSON.stringify(result.state);
+        var priorUndo = localStorage.getItem(CHAT_UNDO_KEY);
+        // Prima si verifica che il backup temporaneo possa essere scritto.
+        localStorage.setItem(CHAT_UNDO_KEY, JSON.stringify({ before: before, after: after, at: Date.now() }));
+        try { localStorage.setItem(KEY, after); }
+        catch (e) {
+          if (priorUndo == null) localStorage.removeItem(CHAT_UNDO_KEY);
+          else localStorage.setItem(CHAT_UNDO_KEY, priorUndo);
+          throw e;
+        }
+        state = result.state;
+        closeSheet(); render();
+        toast('Agenda aggiornata: ' + (result.summary.add + result.summary.update + result.summary.delete) + ' operazioni', 4500);
+      } catch (e) { console.error(e); toast('Non salvato: ' + e.message, 5500); }
+    });
+    updateSummary();
+    openSheet(h('div', { class: 'chat-sheet' },
+      plainHero('Anteprima importazione', 'ChatGPT ↔ Agenda', 'calendar', 'home'),
+      h('div', { class: 'chat-intro' },
+        h('p', null, 'Controlla ogni voce prima del salvataggio. Le modifiche e le aggiunte valide sono preselezionate; duplicati ed eliminazioni richiedono una scelta esplicita.'),
+        summary),
+      list,
+      h('p', { class: 'hint chat-help' }, 'Le eliminazioni riguardano singoli impegni: non cancellano le fotografie né le serie ripetute. Non vengono modificati gli altri dati o gli obiettivi settimanali.'),
+      h('div', { class: 'actions' },
+        h('button', { type: 'button', class: 'btn', onclick: function () { openChatBridge(raw); } }, 'Indietro'),
+        h('span', { class: 'grow' }), commit)));
+  }
+
+  function openChatBridge(pasted, errorText) {
+    var week = h('input', { type: 'date', value: ui.sec === 'home' || ui.sec === 'stats' ? todayISO() : ui.date });
+    var withWork = h('input', { type: 'checkbox', checked: true });
+    var withExercise = h('input', { type: 'checkbox', checked: true });
+    var withFood = h('input', { type: 'checkbox' });
+    var exp = h('textarea', { class: 'chat-textarea', rows: '7', readonly: true, placeholder: 'Il contesto della tua settimana comparirà qui dopo aver premuto «Prepara contesto».' });
+    var input = h('textarea', { class: 'chat-textarea', rows: '8', placeholder: 'Incolla qui il JSON restituito da ChatGPT, o un link https://.../#agenda-import=...' });
+    if (pasted) input.value = pasted;
+    var error = h('p', { class: 'chat-error', role: 'alert' }, errorText || '');
+    function prepare() {
+      try {
+        var types = [];
+        if (withWork.checked) types.push('impegno');
+        if (withExercise.checked) types.push('esercizio');
+        if (withFood.checked) types.push('cibo');
+        if (!types.length) throw new Error('Seleziona almeno una categoria');
+        var context = ChatBridge.exportContext(state, week.value, types);
+        exp.value = 'Voglio organizzare la mia settimana con te. Questo è il contesto della mia Agenda personale (fuso Europe/Rome):\n' +
+          JSON.stringify(context, null, 2) + '\n\nQuando approviamo il piano, restituisci SOLO un JSON valido con schema "agenda-chatgpt-v1", e un array "operations" con oggetti op: "add"/"update"/"delete". ' +
+          'Per add usa almeno type, title, date (YYYY-MM-DD); puoi usare time (HH:MM), note, alarm e gli altri campi Agenda. ' +
+          'Per update/delete usa l’id esatto esportato. Non inventare ID. Non usare durata o orario fine (se serve, mettili nella nota). ' +
+          'Non modificare nulla che non abbiamo concordato. Nessuna API né backend: importerò io il JSON nella PWA.';
+        toast('Contesto pronto: controlla prima di condividerlo');
+      } catch (e) { toast(e.message, 3500); }
+    }
+    [week, withWork, withExercise, withFood].forEach(function (ctrl) {
+      ctrl.addEventListener('change', function () { exp.value = ''; });
+    });
+    var undo = chatUndoInfo();
+    var canUndo = undo && JSON.stringify(state) === undo.after;
+    var back = h('button', { type: 'button', class: 'btn', onclick: closeSheet }, 'Chiudi');
+    openSheet(h('div', { class: 'chat-sheet' },
+      plainHero('ChatGPT ↔ Agenda', 'Scambio dati locale', 'calendar', 'home'),
+      h('section', { class: 'set-sec chat-section' },
+        h('h3', null, '1 · Condividi la tua settimana'),
+        h('p', { class: 'hint' }, 'Scegli cosa mostrare a ChatGPT. Soltanto i dati che copi o condividi escono dal telefono; PIN, foto e backup non vengono inclusi.'),
+        field('Settimana di riferimento', week),
+        h('div', { class: 'chat-types' },
+          h('label', { class: 'check' }, withWork, 'Impegni'),
+          h('label', { class: 'check' }, withExercise, 'Esercizi'),
+          h('label', { class: 'check' }, withFood, 'Cibo')),
+        h('div', { class: 'btns' }, h('button', { type: 'button', class: 'btn', onclick: prepare }, 'Prepara contesto'),
+          h('button', { type: 'button', class: 'btn primary', onclick: function () {
+            if (!exp.value) prepare();
+            if (!exp.value) return;
+            copyPlainText(exp.value).then(function () { toast('Copiato. Incollalo nella conversazione ChatGPT.'); })
+              .catch(function () { toast('Copia non riuscita: seleziona il testo manualmente', 4200); });
+          } }, 'Copia per ChatGPT')),
+        exp,
+        h('p', { class: 'hint' }, 'Dopo aver discusso il programma, chiedi a ChatGPT il JSON di importazione. Evita di condividere note private non necessarie.')),
+      h('section', { class: 'set-sec chat-section' },
+        h('h3', null, '2 · Importa il piano concordato'),
+        h('p', { class: 'hint' }, 'Incolla il JSON oppure il link generato da ChatGPT. Vedrai tutte le operazioni prima di confermarle, senza sostituire gli altri impegni.'),
+        input, error,
+        h('div', { class: 'btns' },
+          h('button', { type: 'button', class: 'btn primary', onclick: function () { previewChatPlan(input.value); } }, 'Controlla e importa'),
+          h('button', { type: 'button', class: 'btn', onclick: function () { input.value = ''; error.textContent = ''; } }, 'Svuota'))),
+      h('section', { class: 'set-sec chat-section' },
+        h('h3', null, 'Ripristino'),
+        h('p', { class: 'hint' }, 'Puoi annullare l’ultima importazione finché non cambi nuovamente l’agenda. Per sicurezza puoi sempre esportare un backup completo dalle Impostazioni.'),
+        h('button', { type: 'button', class: 'btn', disabled: !canUndo, onclick: undoChatImport }, 'Annulla ultima importazione')),
+      h('div', { class: 'actions' }, h('span', { class: 'grow' }), back)));
+  }
+  function processChatLink() {
+    if (!pendingChatLink || locked) return;
+    var content = pendingChatLink;
+    pendingChatLink = null;
+    previewChatPlan(content);
+  }
+  function receiveChatLink() {
+    if (!location.hash || location.hash.indexOf(ChatBridge.PREFIX) !== 0) return;
+    pendingChatLink = location.hash;
+    // Il frammento non viene mai inviato al server. Lo rimuoviamo anche dalla barra
+    // per evitare che i dati restino nella cronologia/condivisione del browser.
+    history.replaceState(history.state, '', location.pathname + location.search);
+    if (!locked && !$('#app').hidden) processChatLink();
+  }
+
+  /* =========================================================
      PIN
      ========================================================= */
   function bytesToB64(b) { return btoa(String.fromCharCode.apply(null, Array.prototype.slice.call(b))); }
@@ -1318,6 +1523,7 @@
     locked = false;
     $('#app').hidden = false;
     tick();
+    processChatLink();
   }
 
   async function verifyCurrentPin() {
@@ -1764,6 +1970,10 @@
       h('section', { class: 'set-sec' }, h('h3', null, 'Blocco con PIN'),
         h('div', { class: 'btns' }, pinBtns), auto ? h('div', { style: 'margin-top:12px' }, auto) : null,
         h('p', { class: 'hint' }, 'Il PIN blocca l\'accesso all\'app; i dati nel telefono non sono cifrati. Se lo dimentichi, l\'unico modo di rientrare è cancellare i dati del sito dal browser (e perdi tutto: fai prima un backup).')),
+      h('section', { class: 'set-sec chat-entry' }, h('h3', null, 'ChatGPT ↔ Agenda'),
+        h('p', { class: 'hint' }, 'Prepara la settimana con ChatGPT e importa solo le modifiche approvate. Senza nuovi account, server o cambiamenti nella repository.'),
+        h('div', { class: 'btns' },
+          h('button', { type: 'button', class: 'btn primary', onclick: function () { openChatBridge(); } }, 'Apri collegamento ChatGPT'))),
       h('section', { class: 'set-sec' }, h('h3', null, 'Dati'),
         h('div', { class: 'btns' },
           h('button', { type: 'button', class: 'btn', onclick: exportBackup }, 'Esporta backup'),
@@ -1812,6 +2022,7 @@
         else tick();
       }
     });
+    window.addEventListener('hashchange', receiveChatLink);
     setInterval(tick, 20000);
   }
 
@@ -1819,17 +2030,20 @@
     state = loadState(); meta = loadMeta();
     applyTheme();
     registerSW(); bind(); bindHistory();
+    receiveChatLink();
     if (meta.pin) {
       locked = false; $('#app').hidden = true;
       var first = maintain(); render();
       await lockNow();
       movedToast(first.moved);
+      processChatLink();
     } else {
       var r = maintain(); render();
       $('#app').hidden = false;
       movedToast(r.moved);
       checkAlarms();
       if (!meta.firstRunDone) await welcome();
+      processChatLink();
     }
   }
 

@@ -1,8 +1,8 @@
 /* Service worker: tiene in cache il "guscio" dell'app così funziona anche offline.
    Nessun dato personale passa di qui: impegni e foto restano nel browser del telefono. */
-const CACHE = 'agenda-shell-v5';
+const CACHE = 'agenda-shell-v6-chatgpt';
 const SHELL = [
-  './', 'index.html', 'style.css', 'logic.js', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'logic.js', 'chatgpt-bridge.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png'
 ];
 
