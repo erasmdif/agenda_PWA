@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.4.1';
+  var VERSION = '1.5.0';
   var ChatBridge = window.AgendaChatBridge;
 
   /* =========================================================
@@ -977,12 +977,16 @@
     var goalHint = h('p', { class: 'hint' });
     var goalBox = h('div', { class: 'field goalpick' }, h('span', { class: 'lbl' }, 'Fa parte di un obiettivo della settimana?'), fGoal, newGoalField, subField, goalHint);
     function weekGoals() {
-      return L.goalsFor(state, typeC.get(), fDate.value || it.date).filter(function (g) { return g.kind === 'list'; });
+      return L.goalsFor(state, typeC.get(), fDate.value || it.date).filter(function (g) { return g.kind === 'list' || g.id === it.gid; });
     }
     function paintSubs() {
       var gid = fGoal.value, g = gid && gid !== '__new' ? state.goals.find(function (x) { return x.id === gid; }) : null;
       newGoalField.hidden = gid !== '__new';
-      subField.hidden = !g;
+      subField.hidden = !g || g.kind !== 'list';
+      if (g && g.kind === 'amount') {
+        goalHint.textContent = 'Questo impegno contribuisce automaticamente al totale settimanale. Il suo valore è definito nel collegamento importato da ChatGPT.';
+        return;
+      }
       goalHint.textContent = !gid ? 'Facoltativo. Un obiettivo raccoglie più passi da fare quando vuoi nella settimana.'
         : gid === '__new' ? 'Creo l\'obiettivo per questa settimana e ci aggiungo questa voce come primo passo.' : '';
       if (!g) return;
@@ -1019,6 +1023,7 @@
         state.goals.push(g);
       } else g = state.goals.find(function (x) { return x.id === gid; });
       if (!g) return;
+      if (g.kind === 'amount') { next.gid = g.id; next.sid = null; return; }
       var sub = g.subs.find(function (sb) { return sb.id === fSub.value; });
       if (!sub) { sub = L.makeSub({ title: next.title, count: 1, burn: next.burn }); g.subs.push(sub); }
       next.gid = g.id; next.sid = sub.id;
@@ -1284,9 +1289,9 @@
     if (!it) return '';
     return (it.date || '') + (it.time ? ' · ' + it.time : '') + ' · ' + (SECTIONS[it.type] ? SECTIONS[it.type].singular : it.type) + ' · ' + it.title;
   }
-  function previewChatPlan(raw) {
+  async function previewChatPlan(raw) {
     var parsed, rows;
-    try { parsed = ChatBridge.parse(raw); rows = ChatBridge.analyze(state, parsed); }
+    try { raw = await ChatBridge.expandLink(raw); parsed = ChatBridge.parse(raw); rows = ChatBridge.analyze(state, parsed); }
     catch (e) { openChatBridge(raw, e.message); return; }
 
     var selected = new Set(rows.filter(function (r) { return r.status === 'ready' && r.op !== 'delete'; })
@@ -1298,19 +1303,21 @@
       var a = chosen.filter(function (r) { return r.op === 'add'; }).length;
       var u = chosen.filter(function (r) { return r.op === 'update'; }).length;
       var d = chosen.filter(function (r) { return r.op === 'delete'; }).length;
-      summary.textContent = a + ' aggiunte · ' + u + ' modifiche · ' + d + ' eliminazioni';
+      var goals = chosen.filter(function (r) { return r.entity === 'goal'; }).length;
+      summary.textContent = a + ' aggiunte · ' + u + ' modifiche · ' + d + ' eliminazioni' + (goals ? ' · ' + goals + ' obiettivi settimanali' : '');
       commit.disabled = !chosen.length;
     }
     var list = h('div', { class: 'chat-operations' }, rows.map(function (r) {
-      var typeLabel = r.op === 'add' ? 'Aggiungi' : r.op === 'update' ? 'Modifica' : 'Elimina';
+      var typeLabel = (r.op === 'add' ? 'Aggiungi' : r.op === 'update' ? 'Modifica' : 'Elimina') + (r.entity === 'goal' ? ' obiettivo' : ' impegno');
       var check = h('input', { type: 'checkbox', checked: selected.has(r.index), disabled: r.status === 'blocked' });
       check.addEventListener('change', function () {
         if (check.checked) selected.add(r.index); else selected.delete(r.index);
         updateSummary();
       });
-      var title = r.next ? chatItemLabel(r.next) : chatItemLabel(r.current);
-      var change = r.op === 'update' && r.current ? 'Prima: ' + chatItemLabel(r.current) : '';
-      var note = r.op !== 'delete' && r.patch.note ? 'Nota: ' + r.patch.note : '';
+      var labelRow = function (x) { return r.entity === 'goal' ? (x ? x.week + ' · Obiettivo ' + x.title + ' (' + (x.kind === 'list' ? x.subs.reduce(function (n, sb) { return n + sb.count; }, 0) + ' sotto-attività' : x.target + ' ' + x.unit) + ')' : '') : chatItemLabel(x); };
+      var title = r.next ? labelRow(r.next) : labelRow(r.current);
+      var change = r.op === 'update' && r.current ? 'Prima: ' + labelRow(r.current) : '';
+      var note = r.entity === 'goal' ? (r.patch.links && r.patch.links.length ? 'Collega ' + r.patch.links.length + ' attività già presenti' : '') : (r.op !== 'delete' && r.patch.note ? 'Nota: ' + r.patch.note : '');
       return h('label', { class: 'chat-operation' + (r.op === 'delete' ? ' chat-delete' : '') + (r.status !== 'ready' ? ' chat-notice' : '') },
         check,
         h('span', { class: 'chat-op-body' },
@@ -1324,7 +1331,7 @@
       var ids = Array.from(selected);
       if (!ids.length) return;
       if (rows.some(function (r) { return selected.has(r.index) && r.op === 'delete'; })) {
-        var sure = await choose('Eliminare gli impegni selezionati? Verranno tolte soltanto queste voci, non le altre.', [
+        var sure = await choose('Confermi le eliminazioni selezionate? Le altre attività restano invariate. Gli impegni appartenenti a obiettivi eliminati rimarranno nell’agenda, scollegati.', [
           { label: 'Conferma eliminazioni', value: 'yes', kind: 'danger' }, { label: 'Torna al piano', value: null, kind: 'ghost' }]);
         if (sure !== 'yes') return;
       }
@@ -1342,7 +1349,7 @@
         }
         state = result.state;
         closeSheet(); render();
-        toast('Agenda aggiornata: ' + (result.summary.add + result.summary.update + result.summary.delete) + ' operazioni', 4500);
+        toast('Agenda aggiornata: ' + (result.summary.add + result.summary.update + result.summary.delete) + ' operazioni, ' + result.summary.links + ' attività collegate', 5000);
       } catch (e) { console.error(e); toast('Non salvato: ' + e.message, 5500); }
     });
     updateSummary();
@@ -1352,7 +1359,7 @@
         h('p', null, 'Controlla ogni voce prima del salvataggio. Le modifiche e le aggiunte valide sono preselezionate; duplicati ed eliminazioni richiedono una scelta esplicita.'),
         summary),
       list,
-      h('p', { class: 'hint chat-help' }, 'Le eliminazioni riguardano singoli impegni: non cancellano le fotografie né le serie ripetute. Non vengono modificati gli altri dati o gli obiettivi settimanali.'),
+      h('p', { class: 'hint chat-help' }, 'I collegamenti agli obiettivi usano gli impegni esistenti senza duplicarli. Nessuna modifica viene applicata prima della conferma. Eliminare un obiettivo non elimina i suoi impegni.'),
       h('div', { class: 'actions' },
         h('button', { type: 'button', class: 'btn', onclick: function () { openChatBridge(raw); } }, 'Indietro'),
         h('span', { class: 'grow' }), commit)));
@@ -1364,7 +1371,7 @@
     var withExercise = h('input', { type: 'checkbox', checked: true });
     var withFood = h('input', { type: 'checkbox' });
     var exp = h('textarea', { class: 'chat-textarea', rows: '7', readonly: true, placeholder: 'Il contesto della tua settimana comparirà qui dopo aver premuto «Prepara contesto».' });
-    var input = h('textarea', { class: 'chat-textarea', rows: '8', placeholder: 'Incolla qui il JSON restituito da ChatGPT, o un link https://.../#agenda-import=...' });
+    var input = h('textarea', { class: 'chat-textarea', rows: '8', placeholder: 'Incolla il JSON o un link #agenda-import= / #agenda-import-z= ricevuto da ChatGPT.' });
     if (pasted) input.value = pasted;
     var error = h('p', { class: 'chat-error', role: 'alert' }, errorText || '');
     function prepare() {
@@ -1377,9 +1384,13 @@
         var context = ChatBridge.exportContext(state, week.value, types);
         exp.value = 'Voglio organizzare la mia settimana con te. Questo è il contesto della mia Agenda personale (fuso Europe/Rome):\n' +
           JSON.stringify(context, null, 2) + '\n\nQuando approviamo il piano, restituisci SOLO un JSON valido con schema "agenda-chatgpt-v1", e un array "operations" con oggetti op: "add"/"update"/"delete". ' +
-          'Per add usa almeno type, title, date (YYYY-MM-DD); puoi usare time (HH:MM), note, alarm e gli altri campi Agenda. ' +
-          'Per update/delete usa l’id esatto esportato. Non inventare ID. Non usare durata o orario fine (se serve, mettili nella nota). ' +
-          'Non modificare nulla che non abbiamo concordato. Nessuna API né backend: importerò io il JSON nella PWA.';
+          'Per gli impegni: add con type, title, date; update/delete con ID esatto esportato. Non inventare ID, non usare linkedToGoal, durata o ora fine. ' +
+          'Per gli obiettivi settimanali usa entity: \"goal\" e op: add/update/delete. Per add servono title, type, week, kind: \"list\" con subs:[{title,count,burn?}] oppure kind: \"amount\" con target e unit. ' +
+          'Per collegare impegni GIA presenti, usa links:[{match:{id:\"ID_REALE\"},sub:\"Titolo identico a uno dei subs\"}] dentro l’operazione goal: non ricreare gli impegni. ' +
+          'Per update di un obiettivo usa il suo ID reale; i subs sostituiscono la lista, mantenendo i vecchi ID dei titoli invariati. ' +
+          'Non modificare nulla che non abbiamo concordato. Preferisco un link diretto cliccabile verso https://erasmdif.github.io/agenda_PWA/#agenda-import= seguito dal JSON codificato con encodeURIComponent; ' +
+          'per link lunghi usa #agenda-import-z= seguito da gzip(JSON in UTF-8) codificato base64url senza padding. Mostra anche il JSON come alternativa. ' +
+          'Il link apre un’ANTEPRIMA da confermare nella PWA: non scrive direttamente da ChatGPT, non usa account, API né backend.';
         toast('Contesto pronto: controlla prima di condividerlo');
       } catch (e) { toast(e.message, 3500); }
     }
@@ -1407,10 +1418,20 @@
               .catch(function () { toast('Copia non riuscita: seleziona il testo manualmente', 4200); });
           } }, 'Copia per ChatGPT')),
         exp,
-        h('p', { class: 'hint' }, 'Dopo aver discusso il programma, chiedi a ChatGPT il JSON di importazione. Evita di condividere note private non necessarie.')),
+        h('p', { class: 'hint' }, 'Chiedi a ChatGPT il pulsante/link «Apri modifiche in Agenda»: il link apre direttamente l’anteprima da confermare. Evita di condividere note private non necessarie.'),
+        h('div', { class: 'btns' },
+          h('button', { type: 'button', class: 'btn', onclick: async function () {
+            if (!exp.value) prepare();
+            if (!exp.value) return;
+            if (navigator.share) {
+              try { await navigator.share({ text: exp.value, title: 'Agenda per ChatGPT' }); return; } catch (e) { if (e.name === 'AbortError') return; }
+            }
+            try { await copyPlainText(exp.value); toast('Contesto copiato; apri ChatGPT e incollalo.'); } catch (e) { toast('Condivisione non disponibile'); }
+          } }, 'Condividi contesto'),
+          h('button', { type: 'button', class: 'btn', onclick: function () { window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer'); } }, 'Apri ChatGPT'))),
       h('section', { class: 'set-sec chat-section' },
         h('h3', null, '2 · Importa il piano concordato'),
-        h('p', { class: 'hint' }, 'Incolla il JSON oppure il link generato da ChatGPT. Vedrai tutte le operazioni prima di confermarle, senza sostituire gli altri impegni.'),
+        h('p', { class: 'hint' }, 'Da ChatGPT tocca «Apri modifiche in Agenda»: questa pagina mostra automaticamente l’anteprima del link. Usa Incolla JSON soltanto come alternativa. Attenzione: browser e PWA installata potrebbero avere memorie locali diverse.'),
         input, error,
         h('div', { class: 'btns' },
           h('button', { type: 'button', class: 'btn primary', onclick: function () { previewChatPlan(input.value); } }, 'Controlla e importa'),
@@ -1428,7 +1449,7 @@
     previewChatPlan(content);
   }
   function receiveChatLink() {
-    if (!location.hash || location.hash.indexOf(ChatBridge.PREFIX) !== 0) return;
+    if (!location.hash || (location.hash.indexOf(ChatBridge.PREFIX) !== 0 && location.hash.indexOf(ChatBridge.ZIP_PREFIX) !== 0)) return;
     pendingChatLink = location.hash;
     // Il frammento non viene mai inviato al server. Lo rimuoviamo anche dalla barra
     // per evitare che i dati restino nella cronologia/condivisione del browser.
@@ -1740,10 +1761,18 @@
 
   // Obiettivo a quantità (es. passi): si inserisce il totale di ogni giorno, come si preferisce.
   function amountBody(g, p, date) {
+    var tracked = Array.isArray(g.credits) && g.credits.length > 0;
+    function creditedOn(d) {
+      if (!tracked) return g.days[d] || 0;
+      return Math.round(g.credits.reduce(function (sum, c) {
+        var it = state.items.find(function (x) { return x.id === c.itemId && x.gid === g.id && x.date === d; });
+        return sum + (it ? c.quantity * it.progress / 100 : 0);
+      }, 0) * 100) / 100;
+    }
     var input = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '0', value: g.days[date] || '', 'aria-label': 'Totale di ' + dayWord(date) });
     input.addEventListener('change', function () { L.setAmount(g, date, input.value); persist(); render(); });
     var strip = h('div', { class: 'daystrip' }, [0, 1, 2, 3, 4, 5, 6].map(function (i) {
-      var d = L.addDays(g.week, i), v = g.days[d] || 0;
+      var d = L.addDays(g.week, i), v = creditedOn(d);
       return h('button', {
         type: 'button', class: 'dcell' + (d === date ? ' sel' : '') + (v ? ' has' : ''),
         'aria-label': cap(fmtLong.format(L.fromISO(d))) + (v ? ': ' + nf.format(v) : ''),
@@ -1756,7 +1785,8 @@
         (left > 1 ? ' · circa ' + nf.format(Math.ceil(p.remaining / left)) + ' al giorno per i ' + left + ' giorni rimasti' : ' · è l\'ultimo giorno');
     }
     return h('div', { class: 'goal-body' },
-      h('label', { class: 'dayentry' }, h('span', null, cap(dayWord(date)) + ': totale'), input, g.unit ? h('span', { class: 'unit' }, g.unit) : null),
+      tracked ? h('p', { class: 'hint' }, 'Avanzamento automatico dagli impegni collegati: completa le attività giornaliere per aggiornare questo obiettivo. Le attività al 50% contribuiscono per metà del loro valore.') :
+        h('label', { class: 'dayentry' }, h('span', null, cap(dayWord(date)) + ': totale'), input, g.unit ? h('span', { class: 'unit' }, g.unit) : null),
       strip, hint ? h('p', { class: 'hint' }, hint) : null);
   }
 
@@ -1866,7 +1896,7 @@
       var kind = kindC.get();
       var ng = L.makeGoal({
         id: g.id, created: g.created, title: title, type: typeC.get(), week: fWeek.value || g.week, kind: kind,
-        target: fTarget.value, unit: fUnit.value, days: g.days,
+        target: fTarget.value, unit: fUnit.value, days: g.days, credits: g.credits,
         subs: subs.map(function (x) { return { id: x.id || undefined, title: x.title, count: x.count, burn: x.burn }; })
       });
       if (kind === 'amount' && !(ng.target > 0)) { toast('Imposta un obiettivo maggiore di zero'); fTarget.focus(); return; }

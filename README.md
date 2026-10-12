@@ -74,8 +74,12 @@ Sovrascrivi `logic.js`, `app.js`, `style.css`, `sw.js`, `README.md` nel reposito
 - **Dettatura**: usa il riconoscimento vocale di Chrome, che invia l'audio ai server di Google.
 - Se cancelli i dati del browser o disinstalli l'app, i dati vanno persi: esporta ogni tanto un backup.
 
-## Novità 1.4.1 — Scambio con ChatGPT (patch drag & drop)
+## Novità 1.5.0 — ChatGPT ↔ Agenda e obiettivi settimanali
 
-Da **Impostazioni → ChatGPT ↔ Agenda** puoi esportare la settimana (selezionando impegni, esercizi e/o cibo), discutere il piano in ChatGPT e importare soltanto le attività concordate, scegliendo le operazioni singolarmente. Si supportano aggiunta, modifica tramite ID e cancellazione mirata, con anteprima, avviso sui duplicati e ripristino dell'ultima importazione se non ci sono modifiche successive. Supportati anche link con frammento `#agenda-import=...`: aprono **l'anteprima**, non modificano automaticamente i dati. Il protocollo è `agenda-chatgpt-v1` e richiede `chatgpt-bridge.js`. Per il formato JSON e le istruzioni vedi `GUIDA_PATCH_CHATGPT.md`.
+Da **Impostazioni → ChatGPT ↔ Agenda** puoi esportare il contesto della settimana, discuterlo in ChatGPT e importare solo le modifiche confermate, con anteprima, verifica dei duplicati e ripristino della precedente importazione.
 
-**Non è una sincronizzazione remota:** l'app rimane offline e i dati continuano a risiedere nel browser del telefono. Per condividere con ChatGPT è necessario copiare il contesto; per ricevere modifiche, incollare il JSON o aprire un link con lo stesso profilo di browser della PWA. Non supporta ancora operazioni sugli obiettivi settimanali come entità autonome: i loro dati sono esportati come contesto.
+Il protocollo `agenda-chatgpt-v1` gestisce **impegni giornalieri** e **obiettivi settimanali** (`entity: "goal"`); può collegare attività già presenti ai sotto-obiettivi, senza ricrearle. Gli obiettivi a quantità possono inoltre aggiornarsi automaticamente in base ai progressi degli impegni collegati (es. 5 attività da 8 mappe = 40 mappe).
+
+ChatGPT può proporre un **link di importazione** diretto a questa PWA: `#agenda-import=` (JSON URL-encoded) o `#agenda-import-z=` (gzip+base64url). Si apre un'**anteprima**, mai una modifica automatica. Per condividere il contesto puoi usare la condivisione nativa del telefono o copiarlo.
+
+**Non è una sincronizzazione remota:** i dati continuano a risiedere nel browser del telefono; ChatGPT non può scrivere da solo in localStorage. Il link deve essere aperto nel profilo browser che contiene i dati della PWA. Vedi `GUIDA_PATCH_CHATGPT.md` per il formato e i limiti.

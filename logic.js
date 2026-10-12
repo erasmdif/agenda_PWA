@@ -366,6 +366,7 @@
       target: kind === 'amount' ? num(p.target) : 0,
       unit: String(p.unit || '').trim().slice(0, 20),
       days: days,
+      credits: kind === 'amount' && Array.isArray(p.credits) ? p.credits.filter(function (c) { return c && typeof c.itemId === 'string' && c.itemId && num(c.quantity) > 0; }).slice(0, 100).map(function (c) { return { itemId: c.itemId, quantity: num(c.quantity) }; }) : [],
       subs: kind === 'list' ? (Array.isArray(p.subs) ? p.subs : []).map(makeSub).filter(function (x) { return x.title; }) : [],
       created: p.created || Date.now()
     };
@@ -402,6 +403,11 @@
       return { kind: 'list', done: done, total: total, pct: total ? Math.round(done / total * 100) : 0, complete: total > 0 && done >= total };
     }
     var sum = amountTotal(goal);
+    (goal.credits || []).forEach(function (credit) {
+      var it = state.items.find(function (x) { return x.id === credit.itemId && x.gid === goal.id && startOfWeek(x.date) === goal.week; });
+      if (it) sum += credit.quantity * (it.progress / 100);
+    });
+    sum = Math.round(sum * 100) / 100;
     return {
       kind: 'amount', total: sum, target: goal.target,
       pct: goal.target ? Math.min(100, Math.round(sum / goal.target * 100)) : 0,
@@ -447,6 +453,9 @@
   /* Dopo aver modificato un obiettivo: allinea titolo/tipo/kcal delle voci collegate. Ritorna le voci
      eliminate (sotto-obiettivi rimossi e non ancora completati) così l'app può cancellarne le foto. */
   function syncGoalItems(state, goal) {
+    // Un obiettivo a quantità può essere alimentato da attività esistenti:
+    // modificarlo NON deve mai eliminare quelle attività.
+    if (goal.kind === 'amount') return [];
     var byId = {};
     goal.subs.forEach(function (sb) { byId[sb.id] = sb; });
     var removed = [];
@@ -466,6 +475,12 @@
   }
 
   function removeGoal(state, id) {
+    var goal = state.goals.find(function (g) { return g.id === id; });
+    if (goal && goal.kind === 'amount') {
+      state.items.forEach(function (it) { if (it.gid === id) { it.gid = null; it.sid = null; } });
+      state.goals = state.goals.filter(function (g) { return g.id !== id; });
+      return [];
+    }
     var removed = [];
     state.items = state.items.filter(function (i) {
       if (i.gid !== id) return true;

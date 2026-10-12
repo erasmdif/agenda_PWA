@@ -1,87 +1,69 @@
-# Patch drag & drop per Agenda PWA v1.4 — collegamento ChatGPT
+# Agenda PWA 1.5 — patch ChatGPT e obiettivi settimanali
 
-**Applicazione risultante: 1.4.1**. Non si aggiunge un chatbot dentro la PWA, un account o un server: si aggiunge uno scambio **esplicito**, locale e revisionabile tra la conversazione ChatGPT e i dati personali di Agenda.
+## Installazione senza perdere i dati
 
-## Installazione (sovrascrittura file)
+1. Nella PWA attuale usa **Impostazioni → Dati → Esporta backup** e conserva il backup localmente.
+2. Estrai **PATCH_Agenda_v1.5_drag_drop.zip** e trascina i file contenuti nella **radice del progetto** `agenda_PWA`, sovrascrivendo gli omonimi. **Non cancellare altri file**, incluse le cartelle `assets`, `icons` e `.git`.
+3. Effettua commit e push, poi apri l'app aggiornata e controlla in Impostazioni che indichi **Agenda v1.5.0**. Se la vecchia versione persiste, chiudi e riapri la PWA per aggiornare la cache del service worker.
+4. Una volta aggiornata la PWA sul telefono, puoi aprire il link di importazione fornito da ChatGPT (oppure incollare il JSON fornito nello scambio).
 
-1. Fai una copia di sicurezza del progetto e, sul telefono, esporta il backup dall'app (**Impostazioni → Dati → Esporta backup**).
-2. Estrai lo ZIP della patch e **trascina i file e la guida nella radice della repository `agenda_PWA`**, sovrascrivendo quelli con lo stesso nome. Non eliminare gli altri file, soprattutto `assets/`, `icons/`, `manifest.webmanifest` e `.git/`.
-3. I file aggiornati sono `app.js`, `index.html`, `style.css`, `sw.js`; il nuovo file **obbligatorio** è `chatgpt-bridge.js`. Lo ZIP include anche `README.md` aggiornato e questa guida.
-4. Commit e push su GitHub: GitHub Pages pubblica i **file dell'app**, NON gli impegni. Attendi il deploy; da telefono chiudi e riapri l'app per ricevere la nuova cache del service worker. Se non cambia subito, riaprila una seconda volta.
-5. Apri **Impostazioni → ChatGPT ↔ Agenda → Apri collegamento ChatGPT**.
+**File sovrascritti:** `app.js`, `logic.js`, `chatgpt-bridge.js`, `sw.js`. Gli archivi locali, le fotografie, il PIN, i dati già registrati e gli impegni non vengono sovrascritti dal deploy.
 
-I dati precedenti restano nella chiave `agenda.state.v1` di localStorage e **non vengono migrati o cancellati dalla patch**. Il nuovo flusso importa solo le operazioni selezionate, lasciando foto, impostazioni, PIN, ricorrenze e obiettivi settimanali invariati.
+## Cosa aggiunge
 
-## Usarla con ChatGPT
+- Operazioni su **obiettivi settimanali**, nello stesso schema `agenda-chatgpt-v1`: `op: add/update/delete`, `entity: "goal"`, con `kind: "list"` e `subs` oppure `kind: "amount"` con `target`, `unit`.
+- **Collegamenti agli impegni già presenti**, con ricerca per ID o con `match` esatto `{type,title,date}` se gli ID non sono stati esportati. Il titolo e la data delle attività già registrate restano invariati; non si creano doppioni.
+- Conteggio automatico per obiettivi quantitativi collegati: ciascuna attività completata contribuisce per la sua `quantity`, proporzionalmente alla sua percentuale `progress`. Per esempio 5 attività da 8 mappe contribuiscono fino a 40 mappe, e 5 attività da 2 articoli fino a 10 articoli. L'obiettivo passi invece rimane un contatore manuale cumulativo.
+- **Link diretto da ChatGPT**: `#agenda-import=` con JSON URL encoded oppure `#agenda-import-z=` con gzip UTF-8 + base64url. I link aprono **solo l'anteprima** da approvare nell'Agenda, senza incollare JSON e senza sincronizzazione cloud.
+- Esportazione del contesto arricchita con gli ID degli obiettivi, dei sotto-obiettivi e dei collegamenti, utile per futuri aggiornamenti.
+- **Condividi contesto** tramite condivisione nativa dello smartphone, quando disponibile. È disponibile anche **Apri ChatGPT** e resta attivo il pulsante **Copia per ChatGPT**.
+- Possibilità di annullare l'ultima importazione, se non hai modificato successivamente l'Agenda; selezione dei singoli cambiamenti in anteprima.
 
-**Agenda → ChatGPT**
+## Importare il piano già concordato
 
-1. Nella schermata ChatGPT ↔ Agenda scegli la settimana con il campo data.
-2. Seleziona i contenuti da condividere: **Impegni** e **Esercizi** sono spuntati inizialmente; **Cibo** no.
-3. Tocca **Prepara contesto**, controlla l'anteprima testuale, poi **Copia per ChatGPT**.
-4. Incolla il testo nella conversazione ChatGPT per programmare insieme gli impegni. Il testo include le date, gli ID necessari per modifiche/eliminazioni mirate e gli obiettivi settimanali utili come contesto; NON include PIN, fotografie o backup.
+Il pacchetto supplementare **piano_obiettivi_12-18_ottobre_2026.json** è un piano di **soli obiettivi e collegamenti** che presuppone che i normali impegni giornalieri del precedente JSON siano già stati inseriti. Include:
 
-**ChatGPT → Agenda**
+- Longo: aggiornamento dell'obiettivo preesistente `mv54gokcbikhx8` e collegamento dei 9 compiti;
+- Terre Unione: 40 mappe, 8 per giorno feriale, avanzamento automatico;
+- Bibliografia: 10 articoli, 2 da martedì a sabato, avanzamento automatico;
+- MyMito Annotator: obiettivo con il compito di venerdì;
+- Archeobotanica: obiettivo con il fix di martedì;
+- Allenamenti: 3 pesanti e 3 leggeri, senza duplicare gli esercizi;
+- Passi: obiettivo quantitativo 70.000, da riempire liberamente nei 7 giorni.
 
-1. Quando il piano è definitivo, chiedi **«Restituisci il JSON Agenda in formato `agenda-chatgpt-v1` con le operazioni concordate»**.
-2. Copia il JSON da ChatGPT, torna in **ChatGPT ↔ Agenda**, incollalo nel riquadro **Importa il piano concordato**, premi **Controlla e importa**.
-3. Esamina ogni modifica. Le aggiunte e modifiche valide sono preselezionate; **eliminazioni e possibili duplicati non sono preselezionati**. Scegli cosa applicare e conferma.
-4. Se necessario: **ChatGPT ↔ Agenda → Annulla ultima importazione**. Il ripristino è possibile finché lo stato dell'agenda non cambia dopo l'importazione. Per un recupero a lungo termine utilizza il backup completo.
+L'ultima operazione è un'eliminazione **non preselezionata** del vecchio impegno giornaliero segnaposto «Obiettivo settimanale — 70.000 passi». Se esiste nell'Agenda, puoi spuntarla nella schermata di conferma; l'obiettivo settimanale vero resta salvo.
 
-### Esempio di formato: aggiunta
+Il piano non tocca il pasto già registrato, gli altri impegni, le fotografie né gli orari. Se alcune attività sono state rinominate nell'app, i relativi collegamenti per `match` risulteranno **bloccati** anziché collegare l'impegno sbagliato: in tal caso esporta un contesto aggiornato e chiedi un piano corretto.
 
-```json
-{
-  "schema": "agenda-chatgpt-v1",
-  "operations": [
-    { "op": "add", "type": "impegno", "title": "Revisione bibliografia", "date": "2026-10-15", "time": "09:00", "note": "2 ore di lavoro" },
-    { "op": "add", "type": "esercizio", "title": "Allenamento", "date": "2026-10-15", "time": "18:00" }
-  ]
-}
-```
-
-Le date nell'esempio sono indicative: sostituiscile con quelle desiderate. **Non esiste un campo orario di fine o durata nella v1.4:** se vuoi una durata, riportala nella nota. Il nome di tipo può essere `impegno`, `esercizio` o `cibo`.
-
-### Esempio: modifica o eliminazione
-
-Per modificare una voce già esistente, ChatGPT deve prima ricevere il contesto esportato, così conosce l'**ID reale**. Non deve inventare ID.
+## Esempio di JSON v1.5
 
 ```json
 {
   "schema": "agenda-chatgpt-v1",
   "operations": [
-    { "op": "update", "id": "ID_REALE_DA_EXPORT", "date": "2026-10-16", "time": "11:30" },
-    { "op": "delete", "id": "ALTRO_ID_REALE_DA_EXPORT" }
+    {
+      "op": "add", "entity": "goal", "type": "impegno", "title": "Aggiornare 40 mappe",
+      "week": "2026-10-12", "kind": "amount", "target": 40, "unit": "mappe",
+      "links": [{"match":{"date":"2026-10-12","type":"impegno","title":"Terre Unione — Aggiornare 8 mappe (1–8)"},"quantity":8}]
+    }
   ]
 }
 ```
 
-La modifica conserva i campi non esplicitamente indicati. L'eliminazione rimuove **solo la singola attività** e NON tocca la serie di ripetizioni di cui potrebbe far parte. Non sono previste modifiche automatiche degli obiettivi settimanali (`state.goals`).
+Per una lista: `"kind":"list","subs":[{"title":"Task A","count":1}],"links":[{"match":{"id":"ID_ESATTO"},"sub":"Task A"}]`.
 
-## Link che apre direttamente l'anteprima
+Per modificare un obiettivo serve il suo **ID esatto** (`"op":"update","entity":"goal","id":"..."`). Gli update di una lista con `subs` sostituiscono la lista ma riusano gli ID dei sotto-obiettivi con lo stesso titolo. Per rinominare uno specifico sotto-obiettivo mantenendone l'ID usa `previousTitle`. Non inventare ID.
 
-Si può anche chiedere a ChatGPT un link alla propria PWA secondo questo formato:
+Le eliminazioni non sono selezionate di default. L'eliminazione di un obiettivo **non elimina** le attività giornaliere ma le scollega. L'eliminazione di un'attività elimina solo quella singola attività; le foto non vengono fisicamente cancellate durante l'importazione.
 
-`https://erasmdif.github.io/agenda_PWA/#agenda-import=<JSON_codificato_con_encodeURIComponent>`
+## Limiti di collegamento e sicurezza
 
-Il contenuto è un JSON con `schema: "agenda-chatgpt-v1"` e `operations`. In JavaScript si costruisce, per esempio, con:
+**Non è un'integrazione che consente a ChatGPT di modificare silenziosamente localStorage.** Senza backend/API, la chat non ha accesso alla memoria privata della PWA sul tuo telefono. Il sistema più diretto e compatibile è:
 
-```js
-const link = 'https://erasmdif.github.io/agenda_PWA/#agenda-import=' + encodeURIComponent(JSON.stringify(piano));
-```
+1. In Agenda condividi il contesto esplicitamente con ChatGPT (share sheet o copia/incolla; ChatGPT non può leggerlo in automatico).
+2. Qui approvi il piano.
+3. Tocchi il link di modifica prodotto dalla chat, che apre Agenda con l'anteprima. Confermi; nessun copia/incolla sul ritorno.
 
-Il frammento `#...` non viene inviato a GitHub Pages: l'app lo legge e lo rimuove subito dalla barra prima di mostrare **l'anteprima**. **Non applica mai le modifiche automaticamente.**
+Un link è sufficiente quando è **aperto nello stesso profilo browser che ospita la tua Agenda**. In alcuni telefoni, ChatGPT apre i link in un browser interno separato, dove l'Agenda potrebbe essere *vuota*: in tal caso non confermare nulla e usa l'importazione manuale dall'app installata. I frammenti URL non vengono trasmessi al server, ma possono restare nella cronologia della chat; non condividere i link con persone terze.
 
-⚠️ Un link può essere troppo lungo per alcune app di messaggistica; per i piani corposi usa il JSON copiato/incollato. **ChatGPT sul telefono potrebbe aprire il link nel proprio browser interno** o in un profilo Chrome con localStorage differente da quello della PWA installata: in quel caso non vedrai gli impegni già presenti nell'app. Per evitarlo, apri la PWA installata normalmente e utilizza **Incolla JSON**, anziché affidarti al link.
-
-## Privacy e backup
-
-- Tutti i dati rimangono sul telefono **fino a quando scegli di copiarli e inviarli nella conversazione ChatGPT**. Quello che incolli in ChatGPT viene ovviamente condiviso con il servizio ChatGPT. Verifica e rimuovi eventuali note private prima di copiarle.
-- Il link contiene nel proprio frammento i dati delle operazioni, quindi non condividere link relativi a impegni privati con terzi.
-- La patch NON installa alcuna chiave API e NON invia richieste a OpenAI, GitHub o a database esterni.
-- È previsto un massimo di 100 operazioni per blocco; date, orari, tipi e valori sono validati. Campi non conosciuti sono rifiutati, anziché ignorati silenziosamente.
-- **Non mettere in repository né backup JSON, né esportazioni reali, né link contenenti i tuoi dati personali.**
-
-## Compatibilità
-
-Patch progettata **sul pacchetto v1.4 allegato alla conversazione** e verificata con controlli di sintassi JS, test di logica su Node e test della UI in Chromium con memoria locale simulata. L'apertura da app ChatGPT in Android/iOS e il comportamento della PWA installata dipendono anche dal browser del dispositivo: testare il primo link su telefono e usare l'importazione manuale come fallback.
+La patch non installa chiavi OpenAI, non aggiunge autenticazione ChatGPT, non aggiunge server, non modifica dati del repository dell'utente e non invia dati in background.
