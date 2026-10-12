@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.3';
+  var VERSION = '1.4';
 
   /* =========================================================
      Utilità DOM
@@ -232,6 +232,12 @@
     return n;
   }
 
+  /* Icone illustrate (manga B/N): PNG con trasparenza, ottimizzate in WebP */
+  var MI = { home: 'home', impegno: 'calendar', esercizio: 'exercise', cibo: 'food', stats: 'progress', target: 'target', mic: 'mic', bell: 'bell', settings: 'settings', plus: 'plus' };
+  function mi(name, cls) {
+    return h('img', { class: 'mi' + (cls ? ' ' + cls : ''), src: 'assets/ic/' + MI[name] + '.webp', alt: '', width: '96', height: '96', decoding: 'async', draggable: 'false' });
+  }
+
   /* =========================================================
      Tema orario: fascia (ora italiana) -> sfondo e tema chiaro/scuro
      mattina 06:00–13:00 · pomeriggio 13:01–17:00 · sera 17:01–22:00 · notte 22:01–05:59
@@ -311,6 +317,7 @@
     var y = window.scrollY;
     main.replaceChildren.apply(main, ui.sec === 'home' ? homeView() : ui.sec === 'stats' ? statsView() : ui.view === 'week' ? weekView() : dayView());
     try { window.scrollTo(0, y); } catch (e) { /* ignore */ }
+    histReconcile();
   }
 
   function renderHeader() {
@@ -327,7 +334,7 @@
       top.replaceChildren(
         h('div', { class: 'top-row' },
           h('div', null, h('div', { class: 'kicker' }, cap(fmtLong.format(new Date()))), h('h1', null, TOD_GREET[tod])),
-          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, mi('settings'))),
         h('div', { class: 'tod-chip' }, icon(TOD_ICON[tod]), TOD_LABEL[tod] + ' · ' + romeClock()));
       return;
     }
@@ -336,7 +343,7 @@
       top.replaceChildren(
         h('div', { class: 'top-row' },
           h('div', null, h('div', { class: 'kicker' }, 'Progressi'), h('h1', null, periodTitle(ui.pview, ui.pdate))),
-          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, mi('settings'))),
         h('div', { class: 'top-row nav' },
           h('div', { class: 'stepper' },
             h('button', { type: 'button', 'aria-label': 'Precedente', onclick: function () { shift(-1); } }, '‹'),
@@ -353,7 +360,7 @@
     top.replaceChildren(
       h('div', { class: 'top-row' },
         h('div', null, h('div', { class: 'kicker' }, kicker), h('h1', null, title)),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, mi('settings'))),
       h('div', { class: 'top-row nav' },
         h('div', { class: 'stepper' },
           h('button', { type: 'button', 'aria-label': 'Precedente', onclick: function () { shift(-1); } }, '‹'),
@@ -379,7 +386,7 @@
           if (k === 'stats') ui.pdate = todayISO();
           ui.sec = k; render();
         }
-      }, icon(k, 'tab-ic'), h('span', null, d[1]));
+      }, mi(k, 'tab-ic'), h('span', null, d[1]));
     });
     $('#tabs').replaceChildren.apply($('#tabs'), tabs);
   }
@@ -530,10 +537,10 @@
     out.push(h('div', { class: 'quick' },
       [['impegno', 'Impegno'], ['esercizio', 'Esercizio'], ['cibo', 'Pasto']].map(function (a) {
         return h('button', { type: 'button', class: 'q', style: '--sec: var(--c-' + a[0] + ')', onclick: function () { ui.date = t; openEditor(null, { type: a[0], date: t }); } },
-          h('span', { class: 'q-ic' }, icon(a[0])), h('span', null, '+ ' + a[1]));
+          h('span', { class: 'q-ic' }, mi(a[0])), h('span', null, a[1]));
       }),
       h('button', { type: 'button', class: 'q', style: '--sec: var(--c-stats)', onclick: function () { ui.date = t; startDictation(); } },
-        h('span', { class: 'q-ic' }, icon('mic')), h('span', null, 'Detta'))));
+        h('span', { class: 'q-ic' }, mi('mic')), h('span', null, 'Detta'))));
 
     // riepilogo di oggi
     var sum = h('section', { class: 'card summary hero', style: '--sec: var(--c-home)' },
@@ -591,7 +598,7 @@
     out.push(goalsBlock());
     if (!items.length) {
       out.push(h('div', { class: 'empty' },
-        h('div', { class: 'big' }, SECTIONS[ui.sec].icon),
+        h('div', { class: 'big' }, mi(ui.sec, 'big-mi')),
         h('p', null, SECTIONS[ui.sec].empty),
         h('p', { class: 'hint' }, 'Tocca + per aggiungerne uno, oppure 🎙️ per dettarlo.')));
     } else {
@@ -602,9 +609,11 @@
 
   function progressCard(items) {
     var pct = L.completion(items);
-    return h('section', { class: 'card summary' },
-      h('div', { class: 'sum-top' }, h('strong', null, L.doneCount(items) + ' di ' + items.length + ' completati'), h('span', { class: 'pct' }, pct + '%')),
-      h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + pct + '%' })));
+    return h('section', { class: 'card summary with-mi' },
+      mi(ui.sec, 'sum-mi'),
+      h('div', { class: 'sum-main' },
+        h('div', { class: 'sum-top' }, h('strong', null, L.doneCount(items) + ' di ' + items.length + ' completati'), h('span', { class: 'pct' }, pct + '%')),
+        h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + pct + '%' }))));
   }
 
   function metric(label, unit, eaten, planned, goal, note) {
@@ -761,17 +770,73 @@
     sheetCleanup = onClose || null;
     var panel = $('.panel', root); if (panel) panel.scrollTop = 0;
   }
+  function runSheetCleanup() { var c = sheetCleanup; sheetCleanup = null; if (c) c(); }
   function closeSheet() {
     var root = $('#sheet');
     root.hidden = true; root.replaceChildren(); document.body.classList.remove('noscroll');
     document.body.dataset.sec = ui.sec;
-    var c = sheetCleanup; sheetCleanup = null;
-    if (c) c();
+    runSheetCleanup();
   }
   function closeOverlays() {
     closeSheet();
     var d = $('#dialog'); d.hidden = true; d.replaceChildren();
     var v = $('#viewer'); v.hidden = true; v.replaceChildren();
+  }
+
+  /* =========================================================
+     Tasto indietro (Android): chiude l'overlay in cima; da una sezione torna alla Home.
+     Ogni overlay aperto (scheda, finestra, foto) e ogni uscita dalla Home occupa una voce
+     della cronologia; histReconcile() tiene la cronologia allineata a ciò che è visibile.
+     ========================================================= */
+  var hist = { ov: 0, sec: false, pending: false, timer: 0 };
+  var OVERLAY_SEL = ['#viewer', '#dialog', '#sheet', '#lock'];            // dal più in alto
+  function overlayVisible(sel) {
+    var r = $(sel);
+    if (!r || r.hidden) return false;
+    return sel === '#lock' ? !locked : true;
+  }
+  function visibleOverlays() { return OVERLAY_SEL.filter(overlayVisible); }
+  function histTraverse(n) {
+    hist.pending = true;
+    clearTimeout(hist.timer);
+    hist.timer = setTimeout(function () { if (hist.pending) { hist.pending = false; histReconcile(); } }, 1200);
+    if (n === 1) history.back(); else history.go(-n);
+  }
+  function histReconcile() {
+    if (hist.pending) return;
+    var want = visibleOverlays().length;
+    if (hist.ov > want) { var n = hist.ov - want; hist.ov = want; histTraverse(n); return; }
+    while (hist.ov < want) { history.pushState({ agenda: 1 }, ''); hist.ov++; }
+    if (hist.ov) return;
+    var wantSec = ui.sec !== 'home';
+    if (hist.sec && !wantSec) { hist.sec = false; histTraverse(1); }
+    else if (!hist.sec && wantSec) { history.pushState({ agenda: 1 }, ''); hist.sec = true; }
+  }
+  function closeTopOverlay() {
+    var sel = visibleOverlays()[0];
+    if (!sel) return false;
+    var r = $(sel);
+    if (sel === '#viewer') r.click();
+    else if (sel === '#lock') { var b = r.querySelector('button.link'); if (b) b.click(); }
+    else {
+      var bd = r.querySelector('.backdrop');
+      if (bd) bd.click(); else { r.hidden = true; r.replaceChildren(); }
+    }
+    return true;
+  }
+  function onPopState() {
+    if (hist.pending) { hist.pending = false; clearTimeout(hist.timer); histReconcile(); return; }
+    if (locked) { histReconcile(); return; }
+    if (hist.ov > 0) { hist.ov--; closeTopOverlay(); }
+    else if (hist.sec) { hist.sec = false; ui.sec = 'home'; ui.date = todayISO(); render(); return; }
+    histReconcile();
+  }
+  function bindHistory() {
+    window.addEventListener('popstate', onPopState);
+    if (window.MutationObserver) {
+      var mo = new MutationObserver(function () { histReconcile(); });
+      OVERLAY_SEL.forEach(function (sel) { var r = $(sel); if (r) mo.observe(r, { attributes: true, attributeFilter: ['hidden'] }); });
+    }
   }
 
   function choose(message, buttons) {
@@ -821,6 +886,53 @@
     return h('div', { class: 'field' }, h('label', null, label), control, extra || null);
   }
 
+  /* ---------- struttura comune dei modali di creazione/modifica ---------- */
+  var NOUN = { impegno: 'impegno', esercizio: 'esercizio', cibo: 'pasto' };
+  function tiles(value, onchange) {
+    var cur = value, el = h('div', { class: 'ttiles', role: 'radiogroup', 'aria-label': 'Tipo' });
+    function paint() {
+      el.replaceChildren.apply(el, ['impegno', 'esercizio', 'cibo'].map(function (k) {
+        return h('button', {
+          type: 'button', class: 'ttile' + (k === cur ? ' on' : ''), style: '--sec: var(--c-' + k + ')', role: 'radio', 'aria-checked': k === cur ? 'true' : 'false',
+          onclick: function () { cur = k; paint(); if (onchange) onchange(cur); }
+        }, h('span', { class: 'tt-ic' }, mi(k)), h('span', { class: 'tt-l' }, cap(NOUN[k])));
+      }));
+    }
+    paint();
+    return { el: el, get: function () { return cur; } };
+  }
+  /* Testata illustrata: lo sfondo della sezione nella fascia oraria corrente + sigillo con l'icona. */
+  function sheetHero(o) {
+    var img = h('div', { class: 'hero-img' }), seal = h('div', { class: 'hero-seal' });
+    var kick = h('div', { class: 'hero-kick' }), title = h('h2', null);
+    function paint(type) {
+      img.style.backgroundImage = 'url("assets/bg/' + type + '-' + (document.documentElement.dataset.tod || 'mattina') + '.webp")';
+      seal.replaceChildren(mi(type));
+      title.textContent = (o.isNew ? 'Nuovo ' : 'Modifica ') + (o.kind === 'goal' ? 'obiettivo' : NOUN[type]);
+      kick.textContent = o.kind === 'goal' ? 'Per la settimana' : 'Per un giorno';
+    }
+    paint(o.type);
+    return { paint: paint, el: h('div', { class: 'sheet-hero' }, img,
+      h('button', { type: 'button', class: 'hero-x', 'aria-label': 'Chiudi', onclick: closeSheet }, '×'),
+      seal, h('div', { class: 'hero-txt' }, kick, title)) };
+  }
+  function plainHero(titleText, kickText, iconKey, bgKey) {
+    var tod = document.documentElement.dataset.tod || 'mattina';
+    var img = h('div', { class: 'hero-img' });
+    img.style.backgroundImage = 'url("assets/bg/' + bgKey + '-' + tod + '.webp")';
+    return h('div', { class: 'sheet-hero plain' }, img,
+      h('button', { type: 'button', class: 'hero-x', 'aria-label': 'Chiudi', onclick: closeSheet }, '×'),
+      h('div', { class: 'hero-seal' }, mi(iconKey)),
+      h('div', { class: 'hero-txt' }, h('div', { class: 'hero-kick' }, kickText), h('h2', null, titleText)));
+  }
+  /* Interruttore giorno / settimana: cambia la scheda sul posto, portandosi dietro titolo, tipo e data. */
+  function modeSwitch(cur, onpick) {
+    return h('div', { class: 'seg mode', role: 'tablist' }, [['day', 'Per un giorno'], ['week', 'Per la settimana']].map(function (m) {
+      return h('button', { type: 'button', class: cur === m[0] ? 'on' : '', role: 'tab', 'aria-selected': cur === m[0] ? 'true' : 'false',
+        onclick: function () { if (cur !== m[0]) onpick(m[0]); } }, m[1]);
+    }));
+  }
+
   function openEditor(existing, defaults) {
     defaults = defaults || {};
     var isNew = !existing;
@@ -830,13 +942,14 @@
     var added = [], removed = [], saved = false;
     var memory = L.mealMemory(state);
 
-    var typeC = chips(Object.keys(SECTIONS).map(function (k) { return { value: k, label: SECTIONS[k].icon + ' ' + SECTIONS[k].label }; }), it.type, onType);
+    var typeC = tiles(it.type, onType);
+    var hero = sheetHero({ kind: 'item', isNew: isNew, type: it.type });
     var fTitle = h('input', { type: 'text', placeholder: 'Titolo', value: it.title, autocomplete: 'off', enterkeyhint: 'done', maxlength: '120', 'aria-label': 'Titolo' });
     var fDate = h('input', { type: 'date', value: it.date, 'aria-label': 'Data' });
     var fTime = h('input', { type: 'time', value: it.time, 'aria-label': 'Ora di inizio' });
     var fAlarm = h('input', { type: 'checkbox', 'aria-label': 'Avvisami' });
     fAlarm.checked = !!it.alarm && !!it.time;
-    var alarmRow = h('label', { class: 'check' }, fAlarm, h('span', null, "Avvisami all'ora di inizio"));
+    var alarmRow = h('label', { class: 'check' }, fAlarm, h('span', null, "Avvisami all'ora di inizio"), mi('bell', 'bell-mi'));
     var modeC = chips([{ value: 'check', label: '✓ Spunta' }, { value: 'percent', label: '% Percentuale' }], it.mode);
     var fKcal = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '1', placeholder: '0', value: it.kcal || '', 'aria-label': 'Calorie' });
     var fProt = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '0.5', placeholder: '0', value: it.protein || '', 'aria-label': 'Proteine in grammi' });
@@ -853,6 +966,69 @@
     var icsHint = h('p', { class: 'hint' }, 'Con l\'app chiusa Android può ritardare gli avvisi di una web app: il calendario li consegna in modo più affidabile.');
     var icsBox = h('div', { class: 'field' }, icsBtn, icsHint);
 
+    /* Sovra-obiettivo: la voce può far parte di un obiettivo settimanale a sotto-obiettivi
+       (uno già esistente oppure nuovo, creato al volo con il titolo della voce). */
+    var fGoal = h('select', { 'aria-label': 'Obiettivo della settimana' });
+    var fSub = h('select', { 'aria-label': 'Sotto-obiettivo' });
+    var fNewGoal = h('input', { type: 'text', placeholder: 'Titolo del nuovo obiettivo (es. Finire il sito)', maxlength: '120', 'aria-label': 'Titolo del nuovo obiettivo' });
+    var subField = h('div', { class: 'field sub-field' }, h('label', null, 'Quale parte?'), fSub);
+    var newGoalField = h('div', { class: 'field' }, fNewGoal);
+    var goalHint = h('p', { class: 'hint' });
+    var goalBox = h('div', { class: 'field goalpick' }, h('span', { class: 'lbl' }, 'Fa parte di un obiettivo della settimana?'), fGoal, newGoalField, subField, goalHint);
+    function weekGoals() {
+      return L.goalsFor(state, typeC.get(), fDate.value || it.date).filter(function (g) { return g.kind === 'list'; });
+    }
+    function paintSubs() {
+      var gid = fGoal.value, g = gid && gid !== '__new' ? state.goals.find(function (x) { return x.id === gid; }) : null;
+      newGoalField.hidden = gid !== '__new';
+      subField.hidden = !g;
+      goalHint.textContent = !gid ? 'Facoltativo. Un obiettivo raccoglie più passi da fare quando vuoi nella settimana.'
+        : gid === '__new' ? 'Creo l\'obiettivo per questa settimana e ci aggiungo questa voce come primo passo.' : '';
+      if (!g) return;
+      var keep = fSub.value || (it.gid === g.id ? it.sid : '');
+      fSub.replaceChildren.apply(fSub, g.subs.map(function (sb) {
+        var done = L.subItems(state, g, sb).filter(function (i) { return i.progress >= 100 && i.id !== it.id; }).length;
+        return h('option', { value: sb.id }, sb.title + (sb.count > 1 ? ' · ' + Math.min(done, sb.count) + '/' + sb.count : ''));
+      }).concat([h('option', { value: '__new' }, '+ Nuovo passo: «' + (fTitle.value.trim() || 'questa voce') + '»')]));
+      fSub.value = keep && (keep === '__new' || g.subs.some(function (sb) { return sb.id === keep; })) ? keep : '__new';
+    }
+    function paintGoals() {
+      var type = typeC.get();
+      var show = type !== 'cibo' && !tpl && !(fRepeat && fRepeat.value !== 'none');
+      goalBox.hidden = !show;
+      if (!show) return;
+      var opts = weekGoals();
+      var keep = fGoal.value || (it.gid && opts.some(function (g) { return g.id === it.gid; }) ? it.gid : '');
+      fGoal.replaceChildren.apply(fGoal, [h('option', { value: '' }, 'Nessuno')].concat(opts.map(function (g) { return h('option', { value: g.id }, g.title); }), [h('option', { value: '__new' }, '+ Nuovo obiettivo…')]));
+      fGoal.value = keep === '__new' || opts.some(function (g) { return g.id === keep; }) ? keep : '';
+      paintSubs();
+    }
+    fGoal.addEventListener('change', function () { fSub.value = ''; paintSubs(); });
+    fDate.addEventListener('change', paintGoals);
+    fTitle.addEventListener('input', function () { if (fGoal.value && fGoal.value !== '__new') paintSubs(); });
+    if (fRepeat) fRepeat.addEventListener('change', paintGoals);
+    /* Applica la scelta alla voce appena salvata (crea obiettivo e/o passo se servono). */
+    function applyGoalLink(next) {
+      if (goalBox.hidden) return;
+      var gid = fGoal.value;
+      if (!gid) { next.gid = null; next.sid = null; return; }
+      var g;
+      if (gid === '__new') {
+        g = L.makeGoal({ type: next.type, week: L.startOfWeek(next.date), kind: 'list', title: fNewGoal.value.trim() || next.title, subs: [] });
+        state.goals.push(g);
+      } else g = state.goals.find(function (x) { return x.id === gid; });
+      if (!g) return;
+      var sub = g.subs.find(function (sb) { return sb.id === fSub.value; });
+      if (!sub) { sub = L.makeSub({ title: next.title, count: 1, burn: next.burn }); g.subs.push(sub); }
+      next.gid = g.id; next.sid = sub.id;
+      if (g.type === 'esercizio' && !next.burn && sub.burn) next.burn = sub.burn;
+    }
+    function toWeek() {
+      var c = { title: fTitle.value.trim(), type: typeC.get(), date: fDate.value || it.date };
+      runSheetCleanup();
+      openGoalEditor(null, c);
+    }
+
     function syncTime() {
       var has = !!fTime.value;
       fAlarm.disabled = !has;
@@ -862,6 +1038,8 @@
     }
     function onType(t) {
       document.body.dataset.sec = t;
+      hero.paint(t);
+      paintGoals();
       foodBox.hidden = t !== 'cibo';
       burnBox.hidden = t !== 'esercizio';
       if (t === 'cibo') fTitle.setAttribute('list', 'meal-list'); else fTitle.removeAttribute('list');
@@ -925,6 +1103,7 @@
       var vals = read();
       if (!vals.title) { toast('Scrivi un titolo'); fTitle.focus(); return; }
       var next = L.makeItem(vals);
+      applyGoalLink(next);
       if (isNew) state.items.push(next);
       else {
         var idx = state.items.findIndex(function (x) { return x.id === existing.id; });
@@ -962,16 +1141,14 @@
       ? h('p', { class: 'hint', style: 'margin-bottom:14px' }, '🔁 Si ripete ' + (tpl.repeat === 'daily' ? 'ogni giorno' : 'ogni settimana') + '. Le modifiche valgono solo per questa occorrenza.')
       : field('Ripetizione', fRepeat);
 
-    var linkedGoal = it.gid ? state.goals.find(function (x) { return x.id === it.gid; }) : null;
-    var goalHint = linkedGoal ? h('p', { class: 'hint', style: 'margin:-6px 0 14px' }, '🎯 Fa parte dell\'obiettivo settimanale «' + linkedGoal.title + '».') : null;
-
     var content = h('div', null,
-      h('h2', null, isNew ? 'Nuova voce' : 'Modifica'),
+      hero.el,
+      isNew ? modeSwitch('day', toWeek) : null,
       heard,
       h('div', { class: 'field' }, typeC.el),
       field('Titolo', fTitle),
-      goalHint,
       h('div', { class: 'row2' }, field('Data', fDate), field('Ora di inizio (facoltativa)', fTime)),
+      goalBox,
       h('div', { class: 'field' }, alarmRow),
       icsBox,
       h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Come lo segno?'), modeC.el),
@@ -1265,7 +1442,7 @@
     root.replaceChildren(
       h('div', { class: 'backdrop', onclick: cancel }),
       h('div', { class: 'dialog mic' },
-        h('div', { class: 'pulse' }, '🎙️'),
+        h('div', { class: 'pulse' }, mi('mic')),
         h('p', { class: 'dict-title' }, 'Sto ascoltando…'),
         live,
         h('p', { class: 'hint' }, 'Es.: «domani alle 9 e mezza dentista» oppure «pranzo 650 kcal 45 g di proteine»'),
@@ -1333,7 +1510,7 @@
     var goals = L.goalsFor(state, ui.sec, ui.date);
     var wrap = h('section', { class: 'goals' },
       h('div', { class: 'goals-head' },
-        h('h2', null, '🎯 Obiettivi della settimana'),
+        h('h2', null, mi('target', 'h-mi'), 'Obiettivi della settimana'),
         h('button', { type: 'button', class: 'link', onclick: function () { openGoalEditor(null); } }, '+ Nuovo')));
     if (!goals.length) wrap.append(h('p', { class: 'hint' }, 'Nessun obiettivo per questa settimana.'));
     goals.forEach(function (g) { wrap.append(goalCard(g)); });
@@ -1419,13 +1596,18 @@
       h('div', { class: 'sub-actions' }, actions));
   }
 
-  function openGoalEditor(existing) {
+  function openGoalEditor(existing, carry) {
     var isNew = !existing;
-    var g = existing ? JSON.parse(JSON.stringify(existing)) : L.makeGoal({ type: ui.sec, week: ui.date, kind: 'amount' });
+    carry = carry || {};
+    var g = existing ? JSON.parse(JSON.stringify(existing)) : L.makeGoal({
+      type: carry.type || (SECTIONS[ui.sec] ? ui.sec : 'impegno'), week: carry.date || ui.date,
+      kind: carry.title ? 'list' : 'amount', title: carry.title || ''
+    });
     var subs = g.subs.map(function (x) { return { id: x.id, title: x.title, count: x.count, burn: x.burn }; });
     if (!subs.length) subs.push({ id: null, title: '', count: 1, burn: 0 });
 
-    var typeC = chips(Object.keys(SECTIONS).map(function (k) { return { value: k, label: SECTIONS[k].icon + ' ' + SECTIONS[k].label }; }), g.type, onType);
+    var typeC = tiles(g.type, onType);
+    var hero = sheetHero({ kind: 'goal', isNew: isNew, type: g.type });
     var kindC = chips([{ value: 'amount', label: '# Quantità' }, { value: 'list', label: '☰ Sotto-obiettivi' }], g.kind, onKind);
     var fTitle = h('input', { type: 'text', placeholder: 'Es. 70.000 passi, Finire il sito', value: g.title, autocomplete: 'off', maxlength: '120', 'aria-label': 'Titolo obiettivo' });
     var fWeek = h('input', { type: 'date', value: g.week, 'aria-label': 'Settimana' });
@@ -1462,7 +1644,14 @@
       weekNote.textContent = 'Settimana dal ' + fmtDM.format(L.fromISO(w)) + ' al ' + fmtDM.format(L.fromISO(L.addDays(w, 6))) + '.';
     }
     function onKind(k) { amountBox.hidden = k !== 'amount'; subsWrap.hidden = k !== 'list'; }
-    function onType(t) { document.body.dataset.sec = t; if (subsBox) paintSubs(); }
+    function onType(t) { document.body.dataset.sec = t; hero.paint(t); if (subsBox) paintSubs(); }
+    function toDay() {
+      var d = fWeek.value || g.week;
+      if (L.startOfWeek(todayISO()) === L.startOfWeek(d)) d = todayISO();
+      var c = { title: fTitle.value.trim(), type: typeC.get(), date: d };
+      runSheetCleanup();
+      openEditor(null, c);
+    }
     fWeek.addEventListener('change', paintWeek); fWeek.addEventListener('input', paintWeek);
 
     function onSave() {
@@ -1499,7 +1688,8 @@
     }
 
     openSheet(h('div', null,
-      h('h2', null, isNew ? 'Nuovo obiettivo settimanale' : 'Modifica obiettivo'),
+      hero.el,
+      isNew ? modeSwitch('week', toDay) : null,
       h('div', { class: 'field' }, typeC.el),
       field('Titolo', fTitle),
       h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Tipo di obiettivo'), kindC.el),
@@ -1561,7 +1751,7 @@
     importInput.addEventListener('change', function () { if (importInput.files && importInput.files[0]) importBackup(importInput.files[0]); importInput.value = ''; });
 
     openSheet(h('div', null,
-      h('h2', null, 'Impostazioni'),
+      plainHero('Impostazioni', 'La tua agenda', 'settings', 'home'),
       h('section', { class: 'set-sec' }, h('h3', null, 'Obiettivo giornaliero (cibo)'),
         h('div', { class: 'row2' }, field('Calorie base (kcal)', kcal), field('Proteine (g)', prot)),
         h('p', { class: 'hint' }, 'Le kcal spese dagli esercizi completati si sommano alle calorie base del giorno (es. 1650 + 300 = 1950).')),
@@ -1605,6 +1795,8 @@
   }
 
   function bind() {
+    $('#fab-add').replaceChildren(mi('plus'));
+    $('#fab-mic').replaceChildren(mi('mic'));
     $('#fab-add').addEventListener('click', function () { openEditor(null); });
     $('#fab-mic').addEventListener('click', startDictation);
     window.addEventListener('scroll', function () { $('#top').classList.toggle('scrolled', window.scrollY > 24); }, { passive: true });
@@ -1626,7 +1818,7 @@
   async function boot() {
     state = loadState(); meta = loadMeta();
     applyTheme();
-    registerSW(); bind();
+    registerSW(); bind(); bindHistory();
     if (meta.pin) {
       locked = false; $('#app').hidden = true;
       var first = maintain(); render();

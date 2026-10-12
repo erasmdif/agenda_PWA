@@ -5,6 +5,7 @@ Impegni, esercizi e alimentazione con spunte o percentuali, sveglie, foto, detta
 
 ## Cosa contiene
 - `index.html`, `style.css`, `logic.js`, `app.js` — l'app
+- `assets/ic/` — 10 icone manga; `assets/dot-field.svg` — motivo a puntini
 - `assets/bg/` — 20 sfondi (5 sezioni × 4 fasce orarie)
 - `sw.js`, `manifest.webmanifest`, `icons/` — rendono l'app installabile e utilizzabile offline
 
@@ -56,7 +57,14 @@ Le percentuali contano solo le voci fino a oggi; quelle future figurano come «i
 - **Sfondi e tema in base all'ora italiana** (Europe/Rome, anche se il telefono è in un altro fuso): mattina 06:00–13:00, pomeriggio 13:01–17:00, sera 17:01–22:00, notte 22:01–05:59. Ogni sezione ha 4 illustrazioni (`assets/bg/<sezione>-<fascia>.webp`) con dissolvenza al cambio. Mattina e pomeriggio usano il tema chiaro, sera e notte quello scuro (prende il posto del tema automatico di sistema).
 - Icone SVG del kit grafico per navigazione e impostazioni; titoli in serif; barra con 5 voci.
 
-## Aggiornare da 1.0 / 1.1 / 1.2
+## Novità 1.4
+- **Icone manga** (B/N) per navigazione, azioni rapide, pulsanti flottanti, impostazioni, obiettivi e sveglia (`assets/ic/`).
+- **Tasto indietro** di Android: chiude il modale o la finestra in primo piano (annulla l'operazione); da una sezione porta alla Home; dalla Home esce dall'app.
+- **Nuova voce o obiettivo nello stesso modale**: l'interruttore «Per un giorno / Per la settimana» cambia scheda sul posto, mantenendo titolo, tipo e data.
+- **Sovra-obiettivo**: nella scheda di un impegno o esercizio puoi scegliere l'obiettivo della settimana a cui appartiene e quale passo (esistente o nuovo); puoi anche creare l'obiettivo al volo.
+- **Grafica**: modale con testata illustrata (sfondo della fascia oraria), tessere per il tipo, ombre «a retino» sulle schede principali, motivo a puntini sullo sfondo.
+
+## Aggiornare da 1.0 / 1.1 / 1.2 / 1.3
 Sovrascrivi `logic.js`, `app.js`, `style.css`, `sw.js`, `README.md` nel repository, poi commit e push. Apri l'app due volte per ricevere la nuova versione (la prima volta mostra ancora la vecchia dalla cache).
 
 ## Limiti da conoscere
