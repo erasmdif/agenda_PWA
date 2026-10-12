@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.2';
+  var VERSION = '1.3';
 
   /* =========================================================
      Utilità DOM
@@ -202,9 +202,85 @@
   }
 
   /* =========================================================
+     Icone (SVG del kit grafico, incorporate: nessuna richiesta di rete)
+     ========================================================= */
+  var ICONS = {
+    home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
+    impegno: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18m-12 6 2 2 4-4"/>',
+    esercizio: '<circle cx="14" cy="4" r="2"/><path d="m13 7-3 4-4 2m4-2 4 2 3 6m-3-6-4 1-3 7M10 9l-3-2-3 3m13 0 3-1"/>',
+    cibo: '<path d="M4 3v7a3 3 0 0 0 6 0V3M7 3v18M14 3v8a3 3 0 0 0 6 0V3c-4 1-6 4-6 8Zm6 8v10"/>',
+    stats: '<path d="M4 21h16M6 17V9h3v8Zm5 0V4h3v13Zm5 0v-6h3v6Z"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="m9.8 2.9-.4 2-1.7.8-1.8-1.1-2.3 2.3 1.1 1.8-.8 1.7-2 .4v3.2l2 .4.8 1.7-1.1 1.8 2.3 2.3 1.8-1.1 1.7.8.4 2h3.2l.4-2 1.7-.8 1.8 1.1 2.3-2.3-1.1-1.8.8-1.7 2-.4v-3.2l-2-.4-.8-1.7 1.1-1.8-2.3-2.3-1.8 1.1-1.7-.8-.4-2Z"/>',
+    mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/>',
+    plus: '<path d="M12 4v16M4 12h16"/>',
+    fire: '<path d="M12 22c4.7 0 8-3.3 8-7.5 0-4-2.5-6.5-4.5-8.5.5 3-1 5-2 5-1-3-1.5-5.8-4.5-9-1 4-5 8.5-5 12.5C4 19 7.3 22 12 22Z"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M19 5l-2 2M7 17l-2 2"/>',
+    sunset: '<path d="M12 10V3m-4 4 4-4 4 4M3 17h18M6 13l-1.5-1.5M18 13l1.5-1.5M7 21h10M2 13h2m16 0h2"/><path d="M7 17a5 5 0 0 1 10 0"/>',
+    moon: '<path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 9 9 0 1 0 20 15.5Z"/>',
+    chevron: '<path d="m9 18 6-6-6-6"/>'
+  };
+  var iconCache = {};
+  function icon(name, cls) {
+    if (!iconCache[name]) {
+      iconCache[name] = new DOMParser().parseFromString(
+        '<svg xmlns="' + SVGNS + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[name] + '</svg>',
+        'image/svg+xml').documentElement;
+    }
+    var n = document.importNode(iconCache[name], true);
+    n.setAttribute('class', 'svg-ic' + (cls ? ' ' + cls : ''));
+    return n;
+  }
+
+  /* =========================================================
+     Tema orario: fascia (ora italiana) -> sfondo e tema chiaro/scuro
+     mattina 06:00–13:00 · pomeriggio 13:01–17:00 · sera 17:01–22:00 · notte 22:01–05:59
+     ========================================================= */
+  var TOD_LABEL = { mattina: 'Mattina', pomeriggio: 'Pomeriggio', sera: 'Sera', notte: 'Notte' };
+  var TOD_GREET = { mattina: 'Buongiorno', pomeriggio: 'Buon pomeriggio', sera: 'Buonasera', notte: 'Buonanotte' };
+  var TOD_ICON = { mattina: 'sun', pomeriggio: 'sun', sera: 'sunset', notte: 'moon' };
+  var THEME_COLOR = { light: '#f5f3f0', dark: '#0f1a2b' };
+  var bgKey = '';
+  function currentTod() { return L.timeOfDay(L.romeMinutes()); }
+  function romeClock() {
+    var m = L.romeMinutes();
+    return L.pad(Math.floor(m / 60)) + ':' + L.pad(m % 60);
+  }
+  function syncBackground() {
+    var host = document.getElementById('bgfx');
+    if (!host) { host = h('div', { id: 'bgfx', 'aria-hidden': 'true' }); document.body.prepend(host); }
+    host.dataset.sec = ui.sec;
+    var key = ui.sec + '-' + document.documentElement.dataset.tod;
+    if (key === bgKey) return;
+    bgKey = key;
+    var url = 'assets/bg/' + key + '.webp', img = new Image();
+    img.onload = function () {
+      if (bgKey !== key) return;                       // nel frattempo è cambiata sezione o fascia
+      var layer = h('div', { class: 'bg' });
+      layer.style.backgroundImage = 'url("' + url + '")';
+      host.append(layer);
+      void layer.offsetWidth;
+      layer.classList.add('on');
+      Array.prototype.slice.call(host.querySelectorAll('.bg'), 0, -1).forEach(function (old) {
+        old.classList.remove('on'); setTimeout(function () { old.remove(); }, 1000);
+      });
+    };
+    img.src = url;                                     // se manca (offline) resta lo sfondo precedente
+  }
+  /* Ritorna true se la fascia è cambiata. */
+  function applyTheme() {
+    var tod = currentTod(), root = document.documentElement, changed = root.dataset.tod !== tod;
+    var theme = (tod === 'mattina' || tod === 'pomeriggio') ? 'light' : 'dark';
+    root.dataset.tod = tod; root.dataset.theme = theme;
+    Array.prototype.forEach.call(document.querySelectorAll('meta[name="theme-color"]'), function (m) { m.setAttribute('content', THEME_COLOR[theme]); });
+    syncBackground();
+    return changed;
+  }
+
+  /* =========================================================
      Stato dell'interfaccia
      ========================================================= */
-  var ui = { sec: 'impegno', view: 'day', date: todayISO(), pview: 'week', pdate: todayISO() };
+  var ui = { sec: 'home', view: 'day', date: todayISO(), pview: 'week', pdate: todayISO() };
 
   function shift(n) {
     if (ui.sec === 'stats') ui.pdate = L.shiftPeriod(ui.pview, ui.pdate, n);
@@ -228,11 +304,12 @@
      ========================================================= */
   function render() {
     document.body.dataset.sec = ui.sec;
+    applyTheme();
     renderHeader();
     renderTabs();
     var main = $('#view');
     var y = window.scrollY;
-    main.replaceChildren.apply(main, ui.sec === 'stats' ? statsView() : ui.view === 'week' ? weekView() : dayView());
+    main.replaceChildren.apply(main, ui.sec === 'home' ? homeView() : ui.sec === 'stats' ? statsView() : ui.view === 'week' ? weekView() : dayView());
     try { window.scrollTo(0, y); } catch (e) { /* ignore */ }
   }
 
@@ -245,12 +322,21 @@
     var title = ui.view === 'week' ? weekLabel(ui.date) : cap(fmtLong.format(L.fromISO(ui.date)));
     var atNow = ui.view === 'week' ? weekHasToday : rel === 0;
     var top = $('#top');
+    if (ui.sec === 'home') {
+      var tod = currentTod();
+      top.replaceChildren(
+        h('div', { class: 'top-row' },
+          h('div', null, h('div', { class: 'kicker' }, cap(fmtLong.format(new Date()))), h('h1', null, TOD_GREET[tod])),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
+        h('div', { class: 'tod-chip' }, icon(TOD_ICON[tod]), TOD_LABEL[tod] + ' · ' + romeClock()));
+      return;
+    }
     if (ui.sec === 'stats') {
       var pr = L.rangeOf(ui.pview, ui.pdate), nowIn = pr.start <= t && t <= pr.end;
       top.replaceChildren(
         h('div', { class: 'top-row' },
           h('div', null, h('div', { class: 'kicker' }, 'Progressi'), h('h1', null, periodTitle(ui.pview, ui.pdate))),
-          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, '⚙')),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
         h('div', { class: 'top-row nav' },
           h('div', { class: 'stepper' },
             h('button', { type: 'button', 'aria-label': 'Precedente', onclick: function () { shift(-1); } }, '‹'),
@@ -267,7 +353,7 @@
     top.replaceChildren(
       h('div', { class: 'top-row' },
         h('div', null, h('div', { class: 'kicker' }, kicker), h('h1', null, title)),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, '⚙')),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, icon('settings'))),
       h('div', { class: 'top-row nav' },
         h('div', { class: 'stepper' },
           h('button', { type: 'button', 'aria-label': 'Precedente', onclick: function () { shift(-1); } }, '‹'),
@@ -282,18 +368,19 @@
   }
 
   function renderTabs() {
-    var tabs = Object.keys(SECTIONS).map(function (k) {
+    var defs = [['home', 'Home'], ['impegno', 'Impegni'], ['esercizio', 'Esercizi'], ['cibo', 'Cibo'], ['stats', 'Progressi']];
+    var tabs = defs.map(function (d) {
+      var k = d[0];
       return h('button', {
-        type: 'button', class: ui.sec === k ? 'on' : '', style: '--tab: var(--c-' + k + ')',
+        type: 'button', class: ui.sec === k ? 'on' : '', style: '--tab: var(--c-' + k + ')', 'data-tab': k,
         'aria-current': ui.sec === k ? 'page' : null,
-        onclick: function () { ui.sec = k; render(); }
-      }, h('span', { class: 'ic' }, SECTIONS[k].icon), SECTIONS[k].label);
+        onclick: function () {
+          if (k === 'home') ui.date = todayISO();
+          if (k === 'stats') ui.pdate = todayISO();
+          ui.sec = k; render();
+        }
+      }, icon(k, 'tab-ic'), h('span', null, d[1]));
     });
-    tabs.push(h('button', {
-      type: 'button', class: ui.sec === 'stats' ? 'on' : '', style: '--tab: var(--c-stats)', 'data-tab': 'stats',
-      'aria-current': ui.sec === 'stats' ? 'page' : null,
-      onclick: function () { ui.sec = 'stats'; ui.pdate = todayISO(); render(); }
-    }, h('span', { class: 'ic' }, '📊'), 'Progressi'));
     $('#tabs').replaceChildren.apply($('#tabs'), tabs);
   }
 
@@ -428,6 +515,71 @@
   }
   function statRow(label, value, sub) {
     return h('div', { class: 'stat-row' }, h('span', { class: 'sr-l' }, label), h('span', { class: 'sr-v' }, h('b', null, value), sub ? h('small', null, sub) : null));
+  }
+
+  /* =========================================================
+     Home: la giornata in una schermata
+     ========================================================= */
+  function goToDay(sec, iso) { ui.sec = sec; ui.view = 'day'; ui.date = iso; render(); }
+
+  function homeView() {
+    var t = todayISO(), out = [];
+    var st = L.periodStats(state, 'day', t, t), streak = L.streak(state, t);
+
+    // azioni rapide
+    out.push(h('div', { class: 'quick' },
+      [['impegno', 'Impegno'], ['esercizio', 'Esercizio'], ['cibo', 'Pasto']].map(function (a) {
+        return h('button', { type: 'button', class: 'q', style: '--sec: var(--c-' + a[0] + ')', onclick: function () { ui.date = t; openEditor(null, { type: a[0], date: t }); } },
+          h('span', { class: 'q-ic' }, icon(a[0])), h('span', null, '+ ' + a[1]));
+      }),
+      h('button', { type: 'button', class: 'q', style: '--sec: var(--c-stats)', onclick: function () { ui.date = t; startDictation(); } },
+        h('span', { class: 'q-ic' }, icon('mic')), h('span', null, 'Detta'))));
+
+    // riepilogo di oggi
+    var sum = h('section', { class: 'card summary hero', style: '--sec: var(--c-home)' },
+      h('div', { class: 'sum-top' },
+        h('span', null, st.overallTotal ? st.overallDone + ' di ' + st.overallTotal + ' attività di oggi' : 'Nessuna attività per oggi'),
+        h('span', { class: 'pct' }, pctText(st.overall))),
+      h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + (st.overall || 0) + '%' })));
+    var bits = [];
+    if (streak > 0) bits.push(h('span', { class: 'chip-s' }, icon('fire'), streak + (streak === 1 ? ' giorno' : ' giorni') + ' di fila'));
+    if (st.burned) bits.push(h('span', { class: 'chip-s' }, icon('esercizio'), nf.format(st.burned) + ' kcal spese'));
+    if (bits.length) sum.append(h('div', { class: 'chips-s' }, bits));
+    out.push(sum);
+
+    // prossime attività di oggi
+    var todo = L.itemsFor(state, 'impegno', t).concat(L.itemsFor(state, 'esercizio', t))
+      .filter(function (i) { return i.progress < 100; })
+      .sort(function (a, b) { var ta = a.time || '99:99', tb = b.time || '99:99'; return ta < tb ? -1 : ta > tb ? 1 : 0; });
+    var next = h('section', { class: 'home-sec' },
+      h('div', { class: 'goals-head' }, h('h2', null, 'Da fare oggi'),
+        todo.length > 4 ? h('button', { type: 'button', class: 'link', onclick: function () { goToDay('impegno', t); } }, 'Vedi tutti (' + todo.length + ')') : null));
+    if (todo.length) next.append(h('ul', { class: 'list' }, todo.slice(0, 4).map(function (it) { return itemRow(it, false); })));
+    else next.append(h('div', { class: 'card home-empty' }, h('p', null, st.overallTotal ? 'Tutto fatto per oggi. Ottimo lavoro!' : 'Niente in programma. Aggiungi qualcosa con i pulsanti qui sopra.')));
+    out.push(next);
+
+    // alimentazione
+    out.push(h('section', { class: 'home-sec', style: '--sec: var(--c-cibo)' },
+      h('div', { class: 'goals-head' }, h('h2', null, 'Alimentazione'),
+        h('button', { type: 'button', class: 'link', onclick: function () { goToDay('cibo', t); } }, 'Apri')),
+      nutritionCard(t)));
+
+    // obiettivi della settimana (tutte le sezioni)
+    var gl = [];
+    ['impegno', 'esercizio', 'cibo'].forEach(function (k) { L.goalsFor(state, k, t).forEach(function (g) { gl.push(g); }); });
+    if (gl.length) {
+      var box = h('section', { class: 'card stat-list' });
+      gl.forEach(function (g) {
+        var p = L.goalProgress(state, g);
+        var txt = p.kind === 'amount' ? nf.format(p.total) + ' / ' + nf.format(p.target) + (g.unit ? ' ' + g.unit : '') : p.done + ' di ' + p.total;
+        box.append(h('button', { type: 'button', class: 'goal-line', style: '--sec: var(--c-' + g.type + ')', onclick: function () { goToDay(g.type, t); } },
+          h('div', { class: 'gl-h' }, h('span', { class: 'gl-t' }, g.title), h('span', { class: 'gl-p' }, p.pct + '%' + (p.complete ? ' ✓' : ''))),
+          h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + p.pct + '%' })),
+          h('div', { class: 'tile-n' }, txt)));
+      });
+      out.push(h('section', { class: 'home-sec' }, h('div', { class: 'goals-head' }, h('h2', null, 'Obiettivi della settimana')), box));
+    }
+    return out;
   }
 
   /* ---------- vista giorno ---------- */
@@ -1083,6 +1235,8 @@
 
   var lastDay = todayISO();
   function tick() {
+    var phase = applyTheme();
+    if (phase && ui.sec === 'home') render(); else if (ui.sec === 'home') renderHeader();
     var t = todayISO();
     if (t !== lastDay) {
       var wasToday = ui.date === lastDay;
@@ -1453,6 +1607,7 @@
   function bind() {
     $('#fab-add').addEventListener('click', function () { openEditor(null); });
     $('#fab-mic').addEventListener('click', startDictation);
+    window.addEventListener('scroll', function () { $('#top').classList.toggle('scrolled', window.scrollY > 24); }, { passive: true });
     var hiddenAt = 0;
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) {
@@ -1470,6 +1625,7 @@
 
   async function boot() {
     state = loadState(); meta = loadMeta();
+    applyTheme();
     registerSW(); bind();
     if (meta.pin) {
       locked = false; $('#app').hidden = true;

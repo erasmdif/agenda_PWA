@@ -5,6 +5,7 @@ Impegni, esercizi e alimentazione con spunte o percentuali, sveglie, foto, detta
 
 ## Cosa contiene
 - `index.html`, `style.css`, `logic.js`, `app.js` — l'app
+- `assets/bg/` — 20 sfondi (5 sezioni × 4 fasce orarie)
 - `sw.js`, `manifest.webmanifest`, `icons/` — rendono l'app installabile e utilizzabile offline
 
 ## Pubblicare su GitHub Pages
@@ -50,7 +51,12 @@ Quarta scheda **📊 Progressi**, con vista Giorno / Settimana / Mese (frecce pe
 - Obiettivi settimanali della settimana o del mese, con avanzamento.
 Le percentuali contano solo le voci fino a oggi; quelle future figurano come «in programma».
 
-## Aggiornare da 1.0 / 1.1
+## Novità 1.3 — Home e sfondi orari
+- **Home** (si apre all'avvio): saluto, azioni rapide (+ Impegno, + Esercizio, + Pasto, Detta), riepilogo di oggi, prossime attività con spunta diretta, alimentazione e obiettivi della settimana.
+- **Sfondi e tema in base all'ora italiana** (Europe/Rome, anche se il telefono è in un altro fuso): mattina 06:00–13:00, pomeriggio 13:01–17:00, sera 17:01–22:00, notte 22:01–05:59. Ogni sezione ha 4 illustrazioni (`assets/bg/<sezione>-<fascia>.webp`) con dissolvenza al cambio. Mattina e pomeriggio usano il tema chiaro, sera e notte quello scuro (prende il posto del tema automatico di sistema).
+- Icone SVG del kit grafico per navigazione e impostazioni; titoli in serif; barra con 5 voci.
+
+## Aggiornare da 1.0 / 1.1 / 1.2
 Sovrascrivi `logic.js`, `app.js`, `style.css`, `sw.js`, `README.md` nel repository, poi commit e push. Apri l'app due volte per ricevere la nuova versione (la prima volta mostra ancora la vecchia dalla cache).
 
 ## Limiti da conoscere

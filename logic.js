@@ -216,6 +216,25 @@
     return { type: type, total: items.length, done: doneCount(items), pct: completion(items) };
   }
 
+  /* ---------- fasce orarie (ora italiana, a prescindere dal fuso del telefono) ----------
+     mattina 06:00–13:00 · pomeriggio 13:01–17:00 · sera 17:01–22:00 · notte 22:01–05:59 */
+  var TODS = ['mattina', 'pomeriggio', 'sera', 'notte'];
+  function romeMinutes(date) {
+    var d = date || new Date();
+    try {
+      var parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);
+      var hh = 0, mm = 0;
+      parts.forEach(function (p) { if (p.type === 'hour') hh = parseInt(p.value, 10); if (p.type === 'minute') mm = parseInt(p.value, 10); });
+      return (hh % 24) * 60 + mm;
+    } catch (e) { return d.getHours() * 60 + d.getMinutes(); }
+  }
+  function timeOfDay(minutes) {
+    if (minutes >= 360 && minutes <= 780) return 'mattina';       // 06:00 – 13:00
+    if (minutes > 780 && minutes <= 1020) return 'pomeriggio';    // 13:01 – 17:00
+    if (minutes > 1020 && minutes <= 1320) return 'sera';         // 17:01 – 22:00
+    return 'notte';                                               // 22:01 – 05:59
+  }
+
   /* ---------- progressi (giorno / settimana / mese) ---------- */
   function daysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
   /* Intervallo del periodo che contiene iso: day | week (lun–dom) | month (mese di calendario). */
@@ -667,6 +686,7 @@
     makeRecurring: makeRecurring, materialize: materialize, removeItem: removeItem, rollover: rollover,
     itemsFor: itemsFor, completion: completion, doneCount: doneCount, nutrition: nutrition,
     weekStats: weekStats, mealMemory: mealMemory,
+    TODS: TODS, romeMinutes: romeMinutes, timeOfDay: timeOfDay,
     rangeOf: rangeOf, shiftPeriod: shiftPeriod, periodStats: periodStats, streak: streak,
     makeGoal: makeGoal, makeSub: makeSub, goalsFor: goalsFor, subItems: subItems, amountTotal: amountTotal,
     setAmount: setAmount, goalProgress: goalProgress, daysLeftInWeek: daysLeftInWeek,
