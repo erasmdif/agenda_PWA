@@ -28,7 +28,7 @@
 
   /* ---------- modello ---------- */
   function emptyState() {
-    return { v: 1, items: [], templates: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+    return { v: 2, items: [], templates: [], goals: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
   }
 
   function makeItem(p) {
@@ -46,9 +46,12 @@
       progress: mode === 'check' ? ((p.progress || 0) >= 100 ? 100 : 0) : clamp(Math.round(p.progress || 0), 0, 100),
       kcal: Math.round(num(p.kcal)),
       protein: Math.round(num(p.protein) * 10) / 10,
+      burn: p.type === 'esercizio' ? Math.round(num(p.burn)) : 0,   // kcal spese (solo esercizi)
       note: String(p.note || ''),
       photos: Array.isArray(p.photos) ? p.photos.slice() : [],
       rid: p.rid || null,
+      gid: p.gid || null,   // obiettivo settimanale collegato
+      sid: p.sid || null,   // sotto-obiettivo collegato
       carried: p.carried || 0,
       origDate: p.origDate || null,
       created: p.created || Date.now()
@@ -60,6 +63,8 @@
     if (!s || typeof s !== 'object') return st;
     st.items = (Array.isArray(s.items) ? s.items : []).map(makeItem);
     st.templates = Array.isArray(s.templates) ? s.templates.filter(function (t) { return t && t.id && t.startDate; }) : [];
+    st.goals = (Array.isArray(s.goals) ? s.goals : []).map(makeGoal).filter(function (g) { return g.title; });
+    st.v = 2;
     var se = s.settings || {};
     st.settings.kcalGoal = Math.max(0, Math.round(num(se.kcalGoal) || (se.kcalGoal === 0 ? 0 : DEFAULT_SETTINGS.kcalGoal)));
     st.settings.proteinGoal = Math.max(0, Math.round(num(se.proteinGoal) || (se.proteinGoal === 0 ? 0 : DEFAULT_SETTINGS.proteinGoal)));
@@ -81,7 +86,7 @@
     if (repeat !== 'daily' && repeat !== 'weekly') return null;
     var t = {
       id: uid(), type: item.type, title: item.title, time: item.time, alarm: item.alarm,
-      mode: item.mode, kcal: item.kcal, protein: item.protein, note: item.note,
+      mode: item.mode, kcal: item.kcal, protein: item.protein, burn: item.burn, note: item.note,
       repeat: repeat, startDate: item.date, through: item.date
     };
     state.templates.push(t);
@@ -104,7 +109,7 @@
         if (exists) continue;
         state.items.push(makeItem({
           type: t.type, title: t.title, date: d, time: t.time, alarm: t.alarm, mode: t.mode,
-          kcal: t.kcal, protein: t.protein, note: t.note, rid: t.id
+          kcal: t.kcal, protein: t.protein, burn: t.burn, note: t.note, rid: t.id
         }));
         created++;
       }
@@ -139,7 +144,7 @@
     var mode = state.settings.rolloverMode;
     var moved = 0;
     state.items.forEach(function (it) {
-      if (it.type === 'cibo' || it.rid) return;
+      if (it.type === 'cibo' || it.rid || it.gid) return;
       if (it.progress >= 100 || it.date >= today) return;
       var from = it.date;
       var nd;
@@ -169,6 +174,7 @@
   function doneCount(items) { return items.filter(function (i) { return i.progress >= 100; }).length; }
 
   function round1(x) { return Math.round(x * 10) / 10; }
+  /* Budget del giorno = kcal base + kcal spese dagli esercizi svolti (in proporzione alla percentuale). */
   function nutrition(state, iso) {
     var meals = itemsFor(state, 'cibo', iso);
     var planned = { kcal: 0, protein: 0 }, eaten = { kcal: 0, protein: 0 };
@@ -178,11 +184,18 @@
     });
     planned = { kcal: Math.round(planned.kcal), protein: round1(planned.protein) };
     eaten = { kcal: Math.round(eaten.kcal), protein: round1(eaten.protein) };
-    var goal = { kcal: state.settings.kcalGoal, protein: state.settings.proteinGoal };
+    var burned = 0, burnPlanned = 0;
+    itemsFor(state, 'esercizio', iso).forEach(function (e) {
+      burned += (e.burn || 0) * e.progress / 100; burnPlanned += (e.burn || 0);
+    });
+    burned = Math.round(burned); burnPlanned = Math.round(burnPlanned);
+    var base = state.settings.kcalGoal;
+    var goal = { kcal: base + burned, protein: state.settings.proteinGoal };
     return {
-      meals: meals, goal: goal, planned: planned, eaten: eaten,
+      meals: meals, base: base, burned: burned, burnPlanned: burnPlanned,
+      goal: goal, planned: planned, eaten: eaten,
       remaining: { kcal: goal.kcal - eaten.kcal, protein: round1(goal.protein - eaten.protein) },
-      remainingPlanned: { kcal: goal.kcal - planned.kcal, protein: round1(goal.protein - planned.protein) }
+      remainingPlanned: { kcal: base + burnPlanned - planned.kcal, protein: round1(goal.protein - planned.protein) }
     };
   }
 
@@ -203,6 +216,93 @@
     return { type: type, total: items.length, done: doneCount(items), pct: completion(items) };
   }
 
+  /* ---------- progressi (giorno / settimana / mese) ---------- */
+  function daysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
+  /* Intervallo del periodo che contiene iso: day | week (lun–dom) | month (mese di calendario). */
+  function rangeOf(period, iso) {
+    var start, end;
+    if (period === 'week') { start = startOfWeek(iso); end = addDays(start, 6); }
+    else if (period === 'month') {
+      var d = fromISO(iso), y = d.getFullYear(), m = d.getMonth();
+      start = y + '-' + pad(m + 1) + '-01'; end = y + '-' + pad(m + 1) + '-' + pad(daysInMonth(y, m));
+    } else { start = iso; end = iso; }
+    var days = [];
+    for (var i = 0, n = diffDays(start, end); i <= n; i++) days.push(addDays(start, i));
+    return { period: period, start: start, end: end, days: days };
+  }
+  /* Sposta il periodo di n unità (mese: stesso giorno, limitato alla lunghezza del mese di arrivo). */
+  function shiftPeriod(period, iso, n) {
+    if (period === 'week') return addDays(iso, 7 * n);
+    if (period === 'month') {
+      var d = fromISO(iso), y = d.getFullYear(), m = d.getMonth() + n;
+      var ty = y + Math.floor(m / 12), tm = ((m % 12) + 12) % 12;
+      return ty + '-' + pad(tm + 1) + '-' + pad(Math.min(d.getDate(), daysInMonth(ty, tm)));
+    }
+    return addDays(iso, n);
+  }
+
+  function typeAgg(items) {
+    return { total: items.length, done: doneCount(items), pct: completion(items) };
+  }
+
+  /* Statistiche calcolate al volo da state: si aggiornano da sole quando le voci cambiano.
+     Le percentuali contano solo le voci fino a oggi; quelle future sono "pianificate" (upcoming). */
+  function periodStats(state, period, iso, today) {
+    var r = rangeOf(period, iso);
+    var series = [], pastItems = { impegno: [], esercizio: [], cibo: [] }, upcoming = 0;
+    var food = { activeDays: 0, eaten: 0, protein: 0, goal: 0, kcalOk: 0, proteinOk: 0 };
+    var burned = 0;
+    r.days.forEach(function (d) {
+      var future = d > today, row = { iso: d, future: future, today: d === today };
+      ['impegno', 'esercizio'].forEach(function (t) {
+        var its = itemsFor(state, t, d);
+        row[t] = its.length ? typeAgg(its) : null;
+        if (future) upcoming += its.length; else pastItems[t] = pastItems[t].concat(its);
+      });
+      var meals = itemsFor(state, 'cibo', d), n = nutrition(state, d);
+      row.cibo = { meals: meals.length, eaten: n.eaten.kcal, protein: n.eaten.protein, goal: n.goal.kcal, goalProtein: n.goal.protein, burned: n.burned, planned: n.planned.kcal };
+      if (future) upcoming += meals.length; else pastItems.cibo = pastItems.cibo.concat(meals);
+      if (!future) burned += n.burned;
+      if (!future && (n.eaten.kcal || n.eaten.protein)) {
+        food.activeDays++; food.eaten += n.eaten.kcal; food.protein += n.eaten.protein; food.goal += n.goal.kcal;
+        if (n.eaten.kcal <= n.goal.kcal) food.kcalOk++;
+        if (n.eaten.protein >= n.goal.protein) food.proteinOk++;
+      }
+      series.push(row);
+    });
+    var impegno = typeAgg(pastItems.impegno), esercizio = typeAgg(pastItems.esercizio);
+    var both = pastItems.impegno.concat(pastItems.esercizio);
+    var a = Math.max(food.activeDays, 1);
+    var goals = state.goals.filter(function (g) { return g.week >= startOfWeek(r.start) && g.week <= r.end; })
+      .sort(function (x, y) { return x.week < y.week ? -1 : x.week > y.week ? 1 : (x.created || 0) - (y.created || 0); })
+      .map(function (g) { return { goal: g, progress: goalProgress(state, g) }; });
+    return {
+      range: r, series: series, upcoming: upcoming,
+      impegno: impegno, esercizio: esercizio,
+      overall: completion(both), overallDone: doneCount(both), overallTotal: both.length,
+      food: {
+        activeDays: food.activeDays, totalKcal: food.eaten, totalProtein: round1(food.protein),
+        avgKcal: food.activeDays ? Math.round(food.eaten / a) : 0, avgProtein: food.activeDays ? Math.round(food.protein / a) : 0,
+        avgGoalKcal: food.activeDays ? Math.round(food.goal / a) : 0, kcalOk: food.kcalOk, proteinOk: food.proteinOk
+      },
+      burned: burned, goals: goals,
+      goalsDone: goals.filter(function (x) { return x.progress.complete; }).length
+    };
+  }
+
+  /* Giorni consecutivi (fino a oggi) con tutte le attività svolte. Giorni senza attività non interrompono;
+     oggi non interrompe se è ancora in corso. */
+  function streak(state, today) {
+    var n = 0, d = today;
+    for (var i = 0; i < 400; i++, d = addDays(d, -1)) {
+      var its = itemsFor(state, 'impegno', d).concat(itemsFor(state, 'esercizio', d));
+      if (!its.length) continue;
+      if (doneCount(its) === its.length) n++;
+      else if (d !== today) break;
+    }
+    return n;
+  }
+
   /* Ultimi valori usati per ogni nome di pasto (per precompilare kcal/proteine). */
   function mealMemory(state) {
     var map = {};
@@ -210,6 +310,163 @@
       .sort(function (a, b) { return (a.created || 0) - (b.created || 0); })
       .forEach(function (m) { map[m.title.toLowerCase()] = { title: m.title, kcal: m.kcal, protein: m.protein }; });
     return map;
+  }
+
+  /* ---------- obiettivi settimanali ----------
+     Un obiettivo vale per una settimana (lun–dom) ed è di due tipi:
+       - 'amount': una quantità da distribuire come si vuole (es. 70.000 passi): si registra il totale di ogni giorno;
+       - 'list'  : sotto-obiettivi (es. "Sessione 50 min" x3, "pagina home" x1) da fare quando si vuole.
+         Completarne o pianificarne uno crea una voce del giorno (collegata con gid/sid) che compare nell'elenco
+         di quel giorno; le kcal spese di un sotto-obiettivo di tipo esercizio alimentano il budget del cibo. */
+  function makeSub(p) {
+    p = p || {};
+    return {
+      id: p.id || uid(),
+      title: String(p.title || '').trim().slice(0, 120),
+      count: clamp(Math.round(num(p.count)) || 1, 1, 99),
+      burn: Math.round(num(p.burn))
+    };
+  }
+
+  function makeGoal(p) {
+    p = p || {};
+    var kind = p.kind === 'list' ? 'list' : 'amount';
+    var days = {};
+    if (kind === 'amount' && p.days && typeof p.days === 'object') {
+      Object.keys(p.days).forEach(function (d) {
+        var v = num(p.days[d]);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(d) && v > 0) days[d] = v;
+      });
+    }
+    return {
+      id: p.id || uid(),
+      title: String(p.title || '').trim().slice(0, 120),
+      type: TYPES.indexOf(p.type) >= 0 ? p.type : 'esercizio',
+      week: startOfWeek(/^\d{4}-\d{2}-\d{2}$/.test(p.week || '') ? p.week : toISO(new Date())),
+      kind: kind,
+      target: kind === 'amount' ? num(p.target) : 0,
+      unit: String(p.unit || '').trim().slice(0, 20),
+      days: days,
+      subs: kind === 'list' ? (Array.isArray(p.subs) ? p.subs : []).map(makeSub).filter(function (x) { return x.title; }) : [],
+      created: p.created || Date.now()
+    };
+  }
+
+  function goalsFor(state, type, iso) {
+    var w = startOfWeek(iso);
+    return state.goals.filter(function (g) { return g.type === type && g.week === w; })
+      .sort(function (a, b) { return (a.created || 0) - (b.created || 0); });
+  }
+
+  function subItems(state, goal, sub) {
+    return state.items.filter(function (i) { return i.gid === goal.id && i.sid === sub.id; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.created || 0) - (b.created || 0); });
+  }
+
+  function amountTotal(goal) {
+    var t = 0;
+    Object.keys(goal.days).forEach(function (d) { t += goal.days[d]; });
+    return Math.round(t * 100) / 100;
+  }
+  function setAmount(goal, iso, value) {
+    var v = num(value);
+    if (v > 0) goal.days[iso] = v; else delete goal.days[iso];
+  }
+
+  function goalProgress(state, goal) {
+    if (goal.kind === 'list') {
+      var total = 0, done = 0;
+      goal.subs.forEach(function (sb) {
+        var d = subItems(state, goal, sb).filter(function (i) { return i.progress >= 100; }).length;
+        total += sb.count; done += Math.min(sb.count, d);
+      });
+      return { kind: 'list', done: done, total: total, pct: total ? Math.round(done / total * 100) : 0, complete: total > 0 && done >= total };
+    }
+    var sum = amountTotal(goal);
+    return {
+      kind: 'amount', total: sum, target: goal.target,
+      pct: goal.target ? Math.min(100, Math.round(sum / goal.target * 100)) : 0,
+      remaining: Math.max(0, Math.round((goal.target - sum) * 100) / 100),
+      complete: goal.target > 0 && sum >= goal.target
+    };
+  }
+
+  /* Giorni rimasti (oggi compreso) per raggiungere l'obiettivo: 7 se la settimana è futura, 0 se passata. */
+  function daysLeftInWeek(goal, today) {
+    var end = addDays(goal.week, 6);
+    if (today > end) return 0;
+    if (today < goal.week) return 7;
+    return diffDays(today, end) + 1;
+  }
+
+  /* Segna fatto un sotto-obiettivo nel giorno iso: completa una voce già pianificata (spostandola a iso,
+     perché è lì che conta, ad esempio per le kcal spese) oppure ne crea una già completata. */
+  function completeSub(state, goal, sub, iso) {
+    var open = subItems(state, goal, sub).filter(function (i) { return i.progress < 100; });
+    var it = open.find(function (i) { return i.date === iso; }) || open[0];
+    if (it) { it.progress = 100; it.date = iso; return it; }
+    it = makeItem({ type: goal.type, title: sub.title, date: iso, progress: 100, burn: sub.burn, gid: goal.id, sid: sub.id });
+    state.items.push(it);
+    return it;
+  }
+  function planSub(state, goal, sub, iso) {
+    var it = makeItem({ type: goal.type, title: sub.title, date: iso, burn: sub.burn, gid: goal.id, sid: sub.id });
+    state.items.push(it);
+    return it;
+  }
+  function undoSub(state, goal, sub) {
+    var done = subItems(state, goal, sub).filter(function (i) { return i.progress >= 100; });
+    var it = done[done.length - 1];
+    if (it) it.progress = 0;
+    return it || null;
+  }
+  function toggleSub(state, goal, sub, iso) {
+    var hasDone = subItems(state, goal, sub).some(function (i) { return i.progress >= 100; });
+    return hasDone ? undoSub(state, goal, sub) : completeSub(state, goal, sub, iso);
+  }
+
+  /* Dopo aver modificato un obiettivo: allinea titolo/tipo/kcal delle voci collegate. Ritorna le voci
+     eliminate (sotto-obiettivi rimossi e non ancora completati) così l'app può cancellarne le foto. */
+  function syncGoalItems(state, goal) {
+    var byId = {};
+    goal.subs.forEach(function (sb) { byId[sb.id] = sb; });
+    var removed = [];
+    state.items = state.items.filter(function (i) {
+      if (i.gid !== goal.id) return true;
+      var sb = byId[i.sid];
+      if (sb) {
+        i.title = sb.title; i.type = goal.type;
+        if (goal.type !== 'esercizio') i.burn = 0; else if (i.progress < 100) i.burn = sb.burn;
+        return true;
+      }
+      if (i.progress < 100) { removed.push(i); return false; }
+      i.gid = null; i.sid = null;
+      return true;
+    });
+    return removed;
+  }
+
+  function removeGoal(state, id) {
+    var removed = [];
+    state.items = state.items.filter(function (i) {
+      if (i.gid !== id) return true;
+      if (i.progress < 100) { removed.push(i); return false; }
+      i.gid = null; i.sid = null;
+      return true;
+    });
+    state.goals = state.goals.filter(function (g) { return g.id !== id; });
+    return removed;
+  }
+
+  function copyGoalToNextWeek(state, id) {
+    var g = state.goals.find(function (x) { return x.id === id; });
+    if (!g) return null;
+    var n = makeGoal({
+      title: g.title, type: g.type, kind: g.kind, target: g.target, unit: g.unit, week: addDays(g.week, 7),
+      subs: g.subs.map(function (sb) { return { title: sb.title, count: sb.count, burn: sb.burn }; })
+    });
+    state.goals.push(n);
+    return n;
   }
 
   /* ---------- sveglie ---------- */
@@ -293,7 +550,7 @@
     var s = s0;
     if (o.length !== s.length) o = s;   // sicurezza: indici sempre allineati
     function cutBoth(mm) { s = cut(s, mm); o = cut(o, mm); }
-    var out = { type: null, title: '', date: ctx.date || today, time: '', alarm: false, kcal: 0, protein: 0 };
+    var out = { type: null, title: '', date: ctx.date || today, time: '', alarm: false, kcal: 0, protein: 0, burn: 0 };
     var m;
 
     // kcal e proteine
@@ -371,9 +628,14 @@
     while ((m = s.match(RE_PERIOD))) cutBoth(m);
 
     // tipo
-    if (/(colazione|pranzo|cena|spuntino|merenda|pasto|kcal|calorie|prote[ie]ne)/.test(s0) || out.kcal || out.protein) out.type = 'cibo';
-    else if (/(allenament|palestra|corsa|correre|corro|camminata|nuoto|nuotare|yoga|stretching|esercizi|flession|squat|bicicletta|ciclismo|pesi|cardio|pilates|plank|addominali)/.test(s0)) out.type = 'esercizio';
+    var food = /(colazione|pranzo|cena|spuntino|merenda|pasto|prote[ie]ne)/.test(s0);
+    var sport = /(allenament|palestra|corsa|correre|corro|camminata|nuoto|nuotare|yoga|stretching|esercizi|flession|squat|bicicletta|ciclismo|pesi|cardio|pilates|plank|addominali)/.test(s0);
+    var hasKcal = !!out.kcal || /(kcal|calorie)/.test(s0);
+    if (food || out.protein) out.type = 'cibo';
+    else if (sport) out.type = 'esercizio';
+    else if (hasKcal) out.type = ctx.type === 'esercizio' ? 'esercizio' : 'cibo';
     else out.type = ctx.type || 'impegno';
+    if (out.type === 'esercizio' && out.kcal) { out.burn = out.kcal; out.kcal = 0; }   // kcal di un esercizio = spese
 
     // titolo
     var t = o.replace(/\s+/g, ' ').trim();
@@ -405,6 +667,11 @@
     makeRecurring: makeRecurring, materialize: materialize, removeItem: removeItem, rollover: rollover,
     itemsFor: itemsFor, completion: completion, doneCount: doneCount, nutrition: nutrition,
     weekStats: weekStats, mealMemory: mealMemory,
+    rangeOf: rangeOf, shiftPeriod: shiftPeriod, periodStats: periodStats, streak: streak,
+    makeGoal: makeGoal, makeSub: makeSub, goalsFor: goalsFor, subItems: subItems, amountTotal: amountTotal,
+    setAmount: setAmount, goalProgress: goalProgress, daysLeftInWeek: daysLeftInWeek,
+    completeSub: completeSub, planSub: planSub, undoSub: undoSub, toggleSub: toggleSub,
+    syncGoalItems: syncGoalItems, removeGoal: removeGoal, copyGoalToNextWeek: copyGoalToNextWeek,
     alarmKey: alarmKey, dueAlarms: dueAlarms, pruneFired: pruneFired,
     toICS: toICS, parseDictation: parseDictation
   };

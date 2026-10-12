@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.0';
+  var VERSION = '1.2';
 
   /* =========================================================
      Utilità DOM
@@ -204,9 +204,13 @@
   /* =========================================================
      Stato dell'interfaccia
      ========================================================= */
-  var ui = { sec: 'impegno', view: 'day', date: todayISO() };
+  var ui = { sec: 'impegno', view: 'day', date: todayISO(), pview: 'week', pdate: todayISO() };
 
-  function shift(n) { ui.date = L.addDays(ui.date, ui.view === 'week' ? 7 * n : n); render(); }
+  function shift(n) {
+    if (ui.sec === 'stats') ui.pdate = L.shiftPeriod(ui.pview, ui.pdate, n);
+    else ui.date = L.addDays(ui.date, ui.view === 'week' ? 7 * n : n);
+    render();
+  }
 
   function maintain() {
     var t = todayISO();
@@ -228,7 +232,7 @@
     renderTabs();
     var main = $('#view');
     var y = window.scrollY;
-    main.replaceChildren.apply(main, ui.view === 'week' ? weekView() : dayView());
+    main.replaceChildren.apply(main, ui.sec === 'stats' ? statsView() : ui.view === 'week' ? weekView() : dayView());
     try { window.scrollTo(0, y); } catch (e) { /* ignore */ }
   }
 
@@ -241,6 +245,25 @@
     var title = ui.view === 'week' ? weekLabel(ui.date) : cap(fmtLong.format(L.fromISO(ui.date)));
     var atNow = ui.view === 'week' ? weekHasToday : rel === 0;
     var top = $('#top');
+    if (ui.sec === 'stats') {
+      var pr = L.rangeOf(ui.pview, ui.pdate), nowIn = pr.start <= t && t <= pr.end;
+      top.replaceChildren(
+        h('div', { class: 'top-row' },
+          h('div', null, h('div', { class: 'kicker' }, 'Progressi'), h('h1', null, periodTitle(ui.pview, ui.pdate))),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Impostazioni', onclick: openSettings }, '⚙')),
+        h('div', { class: 'top-row nav' },
+          h('div', { class: 'stepper' },
+            h('button', { type: 'button', 'aria-label': 'Precedente', onclick: function () { shift(-1); } }, '‹'),
+            h('button', { type: 'button', class: 'today', disabled: nowIn, onclick: function () { ui.pdate = t; render(); } }, 'Oggi'),
+            h('button', { type: 'button', 'aria-label': 'Successivo', onclick: function () { shift(1); } }, '›')),
+          h('div', { class: 'seg', role: 'tablist' }, PERIODS.map(function (v) {
+            return h('button', {
+              type: 'button', class: ui.pview === v[0] ? 'on' : '', role: 'tab', 'aria-selected': ui.pview === v[0] ? 'true' : 'false',
+              onclick: function () { ui.pview = v[0]; render(); }
+            }, v[1]);
+          }))));
+      return;
+    }
     top.replaceChildren(
       h('div', { class: 'top-row' },
         h('div', null, h('div', { class: 'kicker' }, kicker), h('h1', null, title)),
@@ -259,13 +282,152 @@
   }
 
   function renderTabs() {
-    $('#tabs').replaceChildren.apply($('#tabs'), Object.keys(SECTIONS).map(function (k) {
+    var tabs = Object.keys(SECTIONS).map(function (k) {
       return h('button', {
         type: 'button', class: ui.sec === k ? 'on' : '', style: '--tab: var(--c-' + k + ')',
         'aria-current': ui.sec === k ? 'page' : null,
         onclick: function () { ui.sec = k; render(); }
       }, h('span', { class: 'ic' }, SECTIONS[k].icon), SECTIONS[k].label);
-    }));
+    });
+    tabs.push(h('button', {
+      type: 'button', class: ui.sec === 'stats' ? 'on' : '', style: '--tab: var(--c-stats)', 'data-tab': 'stats',
+      'aria-current': ui.sec === 'stats' ? 'page' : null,
+      onclick: function () { ui.sec = 'stats'; ui.pdate = todayISO(); render(); }
+    }, h('span', { class: 'ic' }, '📊'), 'Progressi'));
+    $('#tabs').replaceChildren.apply($('#tabs'), tabs);
+  }
+
+  /* =========================================================
+     Progressi (dashboard): si ricalcola da state a ogni render,
+     quindi segue da sola ogni aggiunta, modifica o rimozione.
+     ========================================================= */
+  var PERIODS = [['day', 'Giorno'], ['week', 'Settimana'], ['month', 'Mese']];
+  var fmtMonth = new Intl.DateTimeFormat('it-IT', { month: 'long', year: 'numeric' });
+  function pctText(p) { return p == null ? '–' : p + '%'; }
+  function periodTitle(period, iso) {
+    if (period === 'week') return weekLabel(iso);
+    if (period === 'month') return cap(fmtMonth.format(L.fromISO(iso)));
+    return cap(fmtLong.format(L.fromISO(iso)));
+  }
+  function periodWord(period) { return period === 'day' ? 'del giorno' : period === 'week' ? 'della settimana' : 'del mese'; }
+
+  function statTile(type, agg, extra) {
+    var s = SECTIONS[type];
+    return h('div', { class: 'tile', style: '--sec: var(--c-' + type + ')' },
+      h('div', { class: 'tile-h' }, h('span', { class: 'ic' }, s.icon), h('span', null, s.label)),
+      h('div', { class: 'tile-v' }, pctText(agg.pct)),
+      h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + (agg.pct || 0) + '%' })),
+      h('div', { class: 'tile-n' }, extra));
+  }
+
+  /* Colonne giornaliere: l'altezza è la percentuale di attività svolte; toccando una colonna si apre quel giorno. */
+  function activityChart(st) {
+    var month = st.range.period === 'month';
+    var cols = st.series.map(function (r, i) {
+      var items = [r.impegno, r.esercizio].filter(Boolean);
+      var tot = items.reduce(function (a, x) { return a + x.total; }, 0);
+      var pct = tot ? Math.round(items.reduce(function (a, x) { return a + x.pct * x.total; }, 0) / tot) : null;
+      var label = month ? ((i + 1) % 5 === 0 || i === 0 ? String(i + 1) : '') : DAYLETTERS[i];
+      return h('button', {
+        type: 'button', class: 'col' + (r.future ? ' future' : '') + (r.today ? ' today' : '') + (pct == null ? ' empty' : ''),
+        'aria-label': cap(fmtLong.format(L.fromISO(r.iso))) + (pct == null ? ': nessuna attività' : ': ' + pct + '%'),
+        onclick: function () { ui.sec = 'impegno'; ui.view = 'day'; ui.date = r.iso; render(); }
+      }, h('span', { class: 'col-bar' }, h('i', { style: 'height:' + (pct == null ? 4 : Math.max(pct, 4)) + '%' })), h('span', { class: 'col-l' }, label));
+    });
+    return h('div', { class: 'chart' + (month ? ' month' : '') }, cols);
+  }
+
+  function foodChart(st) {
+    var month = st.range.period === 'month';
+    var max = 0;
+    st.series.forEach(function (r) { max = Math.max(max, r.cibo.eaten, r.cibo.goal); });
+    max = max || 1;
+    var cols = st.series.map(function (r, i) {
+      var label = month ? ((i + 1) % 5 === 0 || i === 0 ? String(i + 1) : '') : DAYLETTERS[i];
+      var over = r.cibo.eaten > r.cibo.goal;
+      return h('button', {
+        type: 'button', class: 'col' + (r.future ? ' future' : '') + (r.today ? ' today' : '') + (!r.cibo.eaten ? ' empty' : '') + (over ? ' over' : ''),
+        'aria-label': cap(fmtLong.format(L.fromISO(r.iso))) + ': ' + nf.format(r.cibo.eaten) + ' di ' + nf.format(r.cibo.goal) + ' kcal',
+        onclick: function () { ui.sec = 'cibo'; ui.view = 'day'; ui.date = r.iso; render(); }
+      }, h('span', { class: 'col-bar' },
+        h('i', { style: 'height:' + (r.cibo.eaten ? Math.max(r.cibo.eaten / max * 100, 4) : 4) + '%' }),
+        h('u', { class: 'goalmark', style: 'bottom:' + (r.cibo.goal / max * 100) + '%' })),
+        h('span', { class: 'col-l' }, label));
+    });
+    return h('div', { class: 'chart food' + (month ? ' month' : '') }, cols);
+  }
+
+  function statsView() {
+    var today = todayISO(), st = L.periodStats(state, ui.pview, ui.pdate, today), out = [];
+    var P = ui.pview, word = periodWord(P);
+    var nothing = !st.overallTotal && !st.food.activeDays && !st.upcoming && !st.goals.length;
+    if (nothing) {
+      return [h('div', { class: 'empty' }, h('div', { class: 'big' }, '📊'),
+        h('p', null, 'Ancora niente da mostrare ' + word + '. Aggiungi impegni, esercizi o pasti e i progressi compariranno qui, aggiornandosi da soli.'))];
+    }
+    // riepilogo
+    var streak = L.streak(state, today);
+    var hero = h('section', { class: 'card summary hero' },
+      h('div', { class: 'sum-top' }, h('span', null, st.overallTotal ? st.overallDone + ' di ' + st.overallTotal + ' attività svolte' : 'Nessuna attività svolta in questo periodo'),
+        h('span', { class: 'pct' }, pctText(st.overall))),
+      h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + (st.overall || 0) + '%' })));
+    var bits = [];
+    if (streak > 0) bits.push(h('span', { class: 'chip-s' }, '🔥 ' + streak + (streak === 1 ? ' giorno' : ' giorni') + ' di fila'));
+    if (st.upcoming) bits.push(h('span', { class: 'chip-s' }, '🗓️ ' + st.upcoming + ' in programma'));
+    if (st.burned) bits.push(h('span', { class: 'chip-s' }, '⚡ ' + nf.format(st.burned) + ' kcal spese'));
+    if (st.goals.length) bits.push(h('span', { class: 'chip-s' }, '🎯 ' + st.goalsDone + '/' + st.goals.length + ' obiettivi'));
+    if (bits.length) hero.append(h('div', { class: 'chips-s' }, bits));
+    out.push(hero);
+
+    // tre riquadri
+    var f = st.food;
+    out.push(h('div', { class: 'tiles' },
+      statTile('impegno', st.impegno, st.impegno.total ? st.impegno.done + '/' + st.impegno.total : '–'),
+      statTile('esercizio', st.esercizio, st.esercizio.total ? st.esercizio.done + '/' + st.esercizio.total : '–'),
+      statTile('cibo', { pct: f.avgGoalKcal ? Math.min(100, Math.round(f.avgKcal / f.avgGoalKcal * 100)) : null }, f.activeDays ? 'media ' + nf.format(f.avgKcal) + ' kcal' : '–')));
+
+    if (P === 'day') {
+      var n = L.nutrition(state, ui.pdate);
+      if (n.eaten.kcal || n.planned.kcal || n.burned) out.push(h('section', { class: 'card nutri', style: '--sec: var(--c-cibo)' },
+        h('h3', { class: 'card-h' }, 'Alimentazione'), metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal, (n.burned ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi' : null)),
+        metric('Proteine', 'g', n.eaten.protein, n.planned.protein, n.goal.protein)));
+    } else {
+      out.push(h('section', { class: 'card' },
+        h('h3', { class: 'card-h' }, 'Attività svolte per giorno'), activityChart(st),
+        h('p', { class: 'hint' }, 'Impegni ed esercizi insieme. Tocca un giorno per aprirlo.')));
+      if (f.activeDays || st.series.some(function (r) { return r.cibo.planned; })) {
+        out.push(h('section', { class: 'card', style: '--sec: var(--c-cibo)' },
+          h('h3', { class: 'card-h' }, 'Kcal mangiate per giorno'), foodChart(st),
+          h('p', { class: 'hint' }, 'La lineetta è il budget del giorno (base + kcal spese). Barra rossa: budget superato.')));
+      }
+    }
+    // alimentazione in sintesi
+    if (f.activeDays && P !== 'day') {
+      out.push(h('section', { class: 'card stat-list', style: '--sec: var(--c-cibo)' },
+        h('h3', { class: 'card-h' }, 'Alimentazione ' + word),
+        statRow('Media giornaliera', nf.format(f.avgKcal) + ' kcal', 'budget medio ' + nf.format(f.avgGoalKcal)),
+        statRow('Proteine medie', nf.format(f.avgProtein) + ' g', 'obiettivo ' + nf.format(state.settings.proteinGoal)),
+        statRow('Giorni nel budget kcal', f.kcalOk + ' su ' + f.activeDays, null),
+        statRow('Giorni con proteine raggiunte', f.proteinOk + ' su ' + f.activeDays, null),
+        statRow('Totale mangiato', nf.format(f.totalKcal) + ' kcal', nf.format(f.totalProtein) + ' g di proteine')));
+    }
+    // obiettivi
+    if (st.goals.length) {
+      var box = h('section', { class: 'card stat-list' }, h('h3', { class: 'card-h' }, '🎯 Obiettivi'));
+      st.goals.forEach(function (x) {
+        var g = x.goal, p = x.progress;
+        var txt = p.kind === 'amount' ? nf.format(p.total) + ' / ' + nf.format(p.target) + (g.unit ? ' ' + g.unit : '') : p.done + ' di ' + p.total;
+        box.append(h('div', { class: 'goal-line', style: '--sec: var(--c-' + g.type + ')' },
+          h('div', { class: 'gl-h' }, h('span', { class: 'gl-t' }, g.title + (P !== 'week' ? ' · ' + fmtDM.format(L.fromISO(g.week)) : '')), h('span', { class: 'gl-p' }, p.pct + '%' + (p.complete ? ' ✓' : ''))),
+          h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + p.pct + '%' })),
+          h('div', { class: 'tile-n' }, txt)));
+      });
+      out.push(box);
+    }
+    return out;
+  }
+  function statRow(label, value, sub) {
+    return h('div', { class: 'stat-row' }, h('span', { class: 'sr-l' }, label), h('span', { class: 'sr-v' }, h('b', null, value), sub ? h('small', null, sub) : null));
   }
 
   /* ---------- vista giorno ---------- */
@@ -274,6 +436,7 @@
     var out = [];
     if (ui.sec === 'cibo') out.push(nutritionCard(ui.date));
     else if (items.length) out.push(progressCard(items));
+    out.push(goalsBlock());
     if (!items.length) {
       out.push(h('div', { class: 'empty' },
         h('div', { class: 'big' }, SECTIONS[ui.sec].icon),
@@ -292,12 +455,13 @@
       h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + pct + '%' })));
   }
 
-  function metric(label, unit, eaten, planned, goal) {
+  function metric(label, unit, eaten, planned, goal, note) {
     var rem = Math.round((goal - eaten) * 10) / 10;
     var pe = goal ? Math.min(100, eaten / goal * 100) : 0;
     var pp = goal ? Math.min(100, planned / goal * 100) : 0;
     return h('div', { class: 'metric' },
       h('div', { class: 'm-head' }, h('span', { class: 'm-label' }, label), h('span', null, h('b', null, nf.format(eaten)), ' / ' + nf.format(goal) + ' ' + unit)),
+      note ? h('div', { class: 'm-note' }, note) : null,
       h('div', { class: 'bar stacked', 'aria-hidden': 'true' }, h('i', { class: 'planned', style: 'width:' + pp + '%' }), h('i', { style: 'width:' + pe + '%' })),
       h('div', { class: 'm-foot' + (rem < 0 ? ' over' : '') },
         rem >= 0 ? ['Rimangono ', h('b', null, nf.format(rem)), ' ' + unit] : ['Superato di ', h('b', null, nf.format(-rem)), ' ' + unit]));
@@ -306,16 +470,21 @@
   function nutritionCard(date) {
     var n = L.nutrition(state, date);
     var card = h('section', { class: 'card nutri' });
-    if (!n.goal.kcal && !n.goal.protein) {
+    if (!n.base && !n.goal.protein && !n.burned) {
       card.append(h('p', null, 'Imposta il tuo obiettivo giornaliero di kcal e proteine per vedere quanto ti rimane.'),
         h('div', { class: 'nutri-foot' }, h('button', { type: 'button', class: 'link', onclick: openSettings }, 'Imposta obiettivo')));
       return card;
     }
-    card.append(metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal));
+    var note = (n.burned || n.burnPlanned) ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi svolti' : null;
+    card.append(metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal, note));
     card.append(metric('Proteine', 'g', n.eaten.protein, n.planned.protein, n.goal.protein));
-    if (n.planned.kcal > n.eaten.kcal || n.planned.protein > n.eaten.protein) {
-      card.append(h('p', { class: 'hint' }, 'Con tutti i pasti pianificati (' + nf.format(n.planned.kcal) + ' kcal · ' + nf.format(n.planned.protein) +
-        ' g) resterebbero ' + nf.format(n.remainingPlanned.kcal) + ' kcal e ' + nf.format(n.remainingPlanned.protein) + ' g di proteine.'));
+    if (n.planned.kcal > n.eaten.kcal || n.planned.protein > n.eaten.protein || n.burnPlanned > n.burned) {
+      var parts = ['pasti ' + nf.format(n.planned.kcal) + ' kcal · ' + nf.format(n.planned.protein) + ' g'];
+      if (n.burnPlanned > 0) parts.push('esercizi +' + nf.format(n.burnPlanned) + ' kcal');
+      var k = n.remainingPlanned.kcal, pr = n.remainingPlanned.protein;
+      card.append(h('p', { class: 'hint' }, 'Con tutto il pianificato (' + parts.join(', ') + ') ' +
+        (k >= 0 ? 'resterebbero ' + nf.format(k) + ' kcal' : 'supereresti di ' + nf.format(-k) + ' kcal') +
+        (pr >= 0 ? ' e ' + nf.format(pr) + ' g di proteine.' : ' e avresti ' + nf.format(-pr) + ' g di proteine in più.')));
     }
     card.append(h('div', { class: 'nutri-foot' }, h('button', { type: 'button', class: 'link', onclick: openSettings }, 'Modifica obiettivo')));
     return card;
@@ -341,6 +510,11 @@
     var tags = [];
     if (it.time) tags.push(h('span', { class: 'tag' }, (it.alarm ? '🔔 ' : '⏰ ') + it.time));
     if (it.type === 'cibo' && (it.kcal || it.protein)) tags.push(h('span', { class: 'tag' }, nf.format(it.kcal) + ' kcal · ' + nf.format(it.protein) + ' g prot'));
+    if (it.type === 'esercizio' && it.burn) tags.push(h('span', { class: 'tag' }, '🔥 ' + nf.format(it.burn) + ' kcal'));
+    if (it.gid) {
+      var gl = state.goals.find(function (x) { return x.id === it.gid; });
+      if (gl) tags.push(h('span', { class: 'tag goal-tag', title: 'Obiettivo settimanale' }, '🎯 ' + gl.title));
+    }
     if (it.carried > 0) {
       var was = it.origDate ? 'Previsto il ' + fmtDM.format(L.fromISO(it.origDate)) : 'Riportato';
       tags.push(h('span', { class: 'tag warn', title: was }, '↻ riportato' + (compact ? '' : ' · ' + was.toLowerCase())));
@@ -390,13 +564,14 @@
         h('div', { class: 'sum-top' }, h('strong', null, 'Media giornaliera'),
           h('span', { class: 'pct' }, st.activeDays ? nf.format(st.avgKcal) + ' kcal' : '—')),
         h('p', { class: 'hint', style: 'margin-top:6px' }, st.activeDays
-          ? 'Proteine: ' + nf.format(st.avgProtein) + ' g/giorno · obiettivo ' + nf.format(state.settings.kcalGoal) + ' kcal e ' + nf.format(state.settings.proteinGoal) + ' g (su ' + st.activeDays + (st.activeDays === 1 ? ' giorno' : ' giorni') + ' con pasti consumati)'
+          ? 'Proteine: ' + nf.format(st.avgProtein) + ' g/giorno · base ' + nf.format(state.settings.kcalGoal) + ' kcal (+ esercizi) e ' + nf.format(state.settings.proteinGoal) + ' g (su ' + st.activeDays + (st.activeDays === 1 ? ' giorno' : ' giorni') + ' con pasti consumati)'
           : 'Ancora nessun pasto consumato in questa settimana.')));
     } else if (st.total) {
       out.push(h('section', { class: 'card summary' },
         h('div', { class: 'sum-top' }, h('strong', null, st.done + ' di ' + st.total + ' completati'), h('span', { class: 'pct' }, st.pct + '%')),
         h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + st.pct + '%' }))));
     }
+    out.push(goalsBlock());
     var days = [];
     for (var i = 0; i < 7; i++) days.push(dayCard(L.addDays(start, i)));
     out.push(h('div', { class: 'week' }, days));
@@ -513,6 +688,7 @@
     var modeC = chips([{ value: 'check', label: '✓ Spunta' }, { value: 'percent', label: '% Percentuale' }], it.mode);
     var fKcal = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '1', placeholder: '0', value: it.kcal || '', 'aria-label': 'Calorie' });
     var fProt = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: '0.5', placeholder: '0', value: it.protein || '', 'aria-label': 'Proteine in grammi' });
+    var fBurn = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '10', placeholder: '0', value: it.burn || '', 'aria-label': 'Calorie spese' });
     var fNote = h('textarea', { rows: '2', placeholder: 'Note (facoltativo)', 'aria-label': 'Note' });
     fNote.value = it.note || '';
     var fRepeat = tpl ? null : h('select', { 'aria-label': 'Ripetizione', value: 'none' },
@@ -520,6 +696,7 @@
     var mealList = h('datalist', { id: 'meal-list' }, Object.keys(memory).map(function (k) { return h('option', { value: memory[k].title }); }));
 
     var foodBox = h('div', { class: 'row2' }, field('Calorie (kcal)', fKcal), field('Proteine (g)', fProt));
+    var burnBox = field('Calorie spese (kcal)', fBurn, h('p', { class: 'hint' }, 'Quando lo completi, si sommano alle kcal del giorno nella sezione Cibo.'));
     var icsBtn = h('button', { type: 'button', class: 'link', onclick: exportICS }, '📅 Aggiungi al calendario del telefono (.ics)');
     var icsHint = h('p', { class: 'hint' }, 'Con l\'app chiusa Android può ritardare gli avvisi di una web app: il calendario li consegna in modo più affidabile.');
     var icsBox = h('div', { class: 'field' }, icsBtn, icsHint);
@@ -534,6 +711,7 @@
     function onType(t) {
       document.body.dataset.sec = t;
       foodBox.hidden = t !== 'cibo';
+      burnBox.hidden = t !== 'esercizio';
       if (t === 'cibo') fTitle.setAttribute('list', 'meal-list'); else fTitle.removeAttribute('list');
     }
     fTime.addEventListener('input', syncTime);
@@ -578,6 +756,7 @@
         id: it.id, type: type, title: fTitle.value.trim(), date: fDate.value || it.date, time: fTime.value || '',
         alarm: !!fTime.value && fAlarm.checked, mode: modeC.get(),
         progress: it.progress, kcal: type === 'cibo' ? fKcal.value : 0, protein: type === 'cibo' ? fProt.value : 0,
+        burn: type === 'esercizio' ? fBurn.value : 0, gid: it.gid, sid: it.sid,
         note: fNote.value.trim(), photos: it.photos.slice(), rid: it.rid, carried: it.carried, origDate: it.origDate, created: it.created
       };
     }
@@ -631,16 +810,21 @@
       ? h('p', { class: 'hint', style: 'margin-bottom:14px' }, '🔁 Si ripete ' + (tpl.repeat === 'daily' ? 'ogni giorno' : 'ogni settimana') + '. Le modifiche valgono solo per questa occorrenza.')
       : field('Ripetizione', fRepeat);
 
+    var linkedGoal = it.gid ? state.goals.find(function (x) { return x.id === it.gid; }) : null;
+    var goalHint = linkedGoal ? h('p', { class: 'hint', style: 'margin:-6px 0 14px' }, '🎯 Fa parte dell\'obiettivo settimanale «' + linkedGoal.title + '».') : null;
+
     var content = h('div', null,
       h('h2', null, isNew ? 'Nuova voce' : 'Modifica'),
       heard,
       h('div', { class: 'field' }, typeC.el),
       field('Titolo', fTitle),
+      goalHint,
       h('div', { class: 'row2' }, field('Data', fDate), field('Ora di inizio (facoltativa)', fTime)),
       h('div', { class: 'field' }, alarmRow),
       icsBox,
       h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Come lo segno?'), modeC.el),
       foodBox,
+      burnBox,
       repeatBlock,
       field('Note', fNote),
       h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Foto'), photoBox, fileInput),
@@ -965,6 +1149,221 @@
   }
 
   /* =========================================================
+     Obiettivi settimanali
+     ========================================================= */
+  var DAYLETTERS = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
+  function shortNum(v) { return v >= 1000 ? nf.format(Math.round(v / 100) / 10) + 'k' : nf.format(v); }
+  function dayWord(iso) {
+    var d = L.diffDays(todayISO(), iso);
+    return d === 0 ? 'oggi' : d === -1 ? 'ieri' : d === 1 ? 'domani' : fmtShort.format(L.fromISO(iso));
+  }
+  function inWeek(g, iso) { return iso >= g.week && iso <= L.addDays(g.week, 6); }
+
+  function askDate(message, min, max, value) {
+    return new Promise(function (res) {
+      var root = $('#dialog');
+      var inp = h('input', { type: 'date', min: min, max: max, value: value, 'aria-label': 'Data' });
+      function done(v) { root.hidden = true; root.replaceChildren(); res(v); }
+      root.replaceChildren(
+        h('div', { class: 'backdrop', onclick: function () { done(null); } }),
+        h('div', { class: 'dialog', role: 'dialog' },
+          h('p', null, message), h('div', { class: 'field' }, inp),
+          h('div', { class: 'dlg-btns' },
+            h('button', { type: 'button', class: 'btn primary', onclick: function () { done(inp.value && inp.value >= min && inp.value <= max ? inp.value : null); } }, 'Pianifica'),
+            h('button', { type: 'button', class: 'btn ghost', onclick: function () { done(null); } }, 'Annulla'))));
+      root.hidden = false;
+    });
+  }
+
+  function goalsBlock() {
+    var goals = L.goalsFor(state, ui.sec, ui.date);
+    var wrap = h('section', { class: 'goals' },
+      h('div', { class: 'goals-head' },
+        h('h2', null, '🎯 Obiettivi della settimana'),
+        h('button', { type: 'button', class: 'link', onclick: function () { openGoalEditor(null); } }, '+ Nuovo')));
+    if (!goals.length) wrap.append(h('p', { class: 'hint' }, 'Nessun obiettivo per questa settimana.'));
+    goals.forEach(function (g) { wrap.append(goalCard(g)); });
+    return wrap;
+  }
+
+  function goalCard(g) {
+    var p = L.goalProgress(state, g), date = ui.date;
+    var summary = p.kind === 'amount'
+      ? nf.format(p.total) + ' / ' + nf.format(p.target) + (g.unit ? ' ' + g.unit : '')
+      : p.done + ' di ' + p.total + ' completati';
+    var card = h('article', { class: 'card goal' + (p.complete ? ' done' : '') },
+      h('div', { class: 'goal-head' },
+        h('button', { type: 'button', class: 'goal-title', 'aria-label': 'Modifica obiettivo ' + g.title, onclick: function () { openGoalEditor(g); } }, g.title, h('span', { class: 'edit-ico', 'aria-hidden': 'true' }, '✎')),
+        h('span', { class: 'pct' }, p.pct + '%')),
+      h('div', { class: 'goal-sum' }, summary + (p.complete ? ' ✓' : '')),
+      h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + p.pct + '%' })));
+    card.append(p.kind === 'amount' ? amountBody(g, p, date) : h('div', { class: 'goal-body' }, g.subs.map(function (sb) { return subRow(g, sb, date); })));
+    return card;
+  }
+
+  // Obiettivo a quantità (es. passi): si inserisce il totale di ogni giorno, come si preferisce.
+  function amountBody(g, p, date) {
+    var input = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '0', value: g.days[date] || '', 'aria-label': 'Totale di ' + dayWord(date) });
+    input.addEventListener('change', function () { L.setAmount(g, date, input.value); persist(); render(); });
+    var strip = h('div', { class: 'daystrip' }, [0, 1, 2, 3, 4, 5, 6].map(function (i) {
+      var d = L.addDays(g.week, i), v = g.days[d] || 0;
+      return h('button', {
+        type: 'button', class: 'dcell' + (d === date ? ' sel' : '') + (v ? ' has' : ''),
+        'aria-label': cap(fmtLong.format(L.fromISO(d))) + (v ? ': ' + nf.format(v) : ''),
+        onclick: function () { ui.date = d; render(); }
+      }, h('span', null, DAYLETTERS[i]), h('b', null, v ? shortNum(v) : '·'));
+    }));
+    var left = L.daysLeftInWeek(g, todayISO()), hint = null;
+    if (p.remaining > 0 && left > 0) {
+      hint = 'Mancano ' + nf.format(p.remaining) + (g.unit ? ' ' + g.unit : '') +
+        (left > 1 ? ' · circa ' + nf.format(Math.ceil(p.remaining / left)) + ' al giorno per i ' + left + ' giorni rimasti' : ' · è l\'ultimo giorno');
+    }
+    return h('div', { class: 'goal-body' },
+      h('label', { class: 'dayentry' }, h('span', null, cap(dayWord(date)) + ': totale'), input, g.unit ? h('span', { class: 'unit' }, g.unit) : null),
+      strip, hint ? h('p', { class: 'hint' }, hint) : null);
+  }
+
+  // Sotto-obiettivo: si segna fatto oggi (o nel giorno selezionato) oppure si pianifica in un giorno.
+  function subRow(g, sb, date) {
+    var items = L.subItems(state, g, sb);
+    var done = items.filter(function (i) { return i.progress >= 100; }).length;
+    var open = items.filter(function (i) { return i.progress < 100; });
+    var shown = Math.min(done, sb.count), complete = done >= sb.count;
+    function commit() { persist(); render(); }
+    var left;
+    if (sb.count === 1) {
+      left = h('button', {
+        type: 'button', class: 'chk' + (complete ? ' on' : ''), role: 'checkbox', 'aria-checked': complete ? 'true' : 'false',
+        'aria-label': (complete ? 'Fatto: ' : 'Da fare: ') + sb.title,
+        onclick: function () { L.toggleSub(state, g, sb, date); commit(); }
+      }, svgCheck());
+    } else if (sb.count <= 10) {
+      left = h('span', { class: 'pips', role: 'img', 'aria-label': shown + ' su ' + sb.count },
+        Array.apply(null, Array(sb.count)).map(function (_, i) { return h('i', { class: i < shown ? 'on' : '' }); }));
+    } else {
+      left = h('span', { class: 'pips-num' }, shown + '/' + sb.count);
+    }
+    var tags = [];
+    if (sb.count > 1) tags.push(h('span', { class: 'tag' }, shown + ' su ' + sb.count));
+    if (sb.burn && g.type === 'esercizio') tags.push(h('span', { class: 'tag' }, '🔥 ' + nf.format(sb.burn) + ' kcal'));
+    open.forEach(function (i) { tags.push(h('span', { class: 'tag plan' }, '📅 ' + fmtShort.format(L.fromISO(i.date)))); });
+    var actions = [];
+    if (sb.count > 1 && done > 0) actions.push(h('button', { type: 'button', class: 'mini-btn', 'aria-label': 'Annulla l\'ultimo completamento di ' + sb.title, onclick: function () { L.undoSub(state, g, sb); commit(); } }, '−'));
+    if (sb.count > 1 && !complete) actions.push(h('button', { type: 'button', class: 'mini-btn primary', 'aria-label': 'Segna fatto: ' + sb.title + ' (' + dayWord(date) + ')', onclick: function () { L.completeSub(state, g, sb, date); commit(); } }, '+'));
+    if (!complete) actions.push(h('button', {
+      type: 'button', class: 'mini-btn', 'aria-label': 'Pianifica in un giorno: ' + sb.title,
+      onclick: async function () {
+        var wkEnd = L.addDays(g.week, 6);
+        var d = await askDate('Quando vuoi farlo? «' + sb.title + '»', g.week, wkEnd, inWeek(g, date) ? date : g.week);
+        if (!d) return;
+        L.planSub(state, g, sb, d); commit(); toast('Pianificato per ' + cap(fmtLong.format(L.fromISO(d))));
+      }
+    }, '📅'));
+    return h('div', { class: 'subrow' + (complete ? ' done' : '') },
+      left,
+      h('div', { class: 'sub-body' }, h('div', { class: 'title' + (complete ? ' done' : '') }, sb.title), h('div', { class: 'meta' }, tags)),
+      h('div', { class: 'sub-actions' }, actions));
+  }
+
+  function openGoalEditor(existing) {
+    var isNew = !existing;
+    var g = existing ? JSON.parse(JSON.stringify(existing)) : L.makeGoal({ type: ui.sec, week: ui.date, kind: 'amount' });
+    var subs = g.subs.map(function (x) { return { id: x.id, title: x.title, count: x.count, burn: x.burn }; });
+    if (!subs.length) subs.push({ id: null, title: '', count: 1, burn: 0 });
+
+    var typeC = chips(Object.keys(SECTIONS).map(function (k) { return { value: k, label: SECTIONS[k].icon + ' ' + SECTIONS[k].label }; }), g.type, onType);
+    var kindC = chips([{ value: 'amount', label: '# Quantità' }, { value: 'list', label: '☰ Sotto-obiettivi' }], g.kind, onKind);
+    var fTitle = h('input', { type: 'text', placeholder: 'Es. 70.000 passi, Finire il sito', value: g.title, autocomplete: 'off', maxlength: '120', 'aria-label': 'Titolo obiettivo' });
+    var fWeek = h('input', { type: 'date', value: g.week, 'aria-label': 'Settimana' });
+    var weekNote = h('p', { class: 'hint' });
+    var fTarget = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '70000', value: g.target || '', 'aria-label': 'Obiettivo della settimana' });
+    var fUnit = h('input', { type: 'text', placeholder: 'passi, km, pagine…', value: g.unit, maxlength: '20', 'aria-label': 'Unità' });
+    var amountBox = h('div', null, h('div', { class: 'row2' }, field('Obiettivo della settimana', fTarget), field('Unità', fUnit)),
+      h('p', { class: 'hint', style: 'margin:-6px 0 14px' }, 'Poi inserisci il totale di ogni giorno: 20.000 un giorno, 5.000 un altro… come preferisci.'));
+    var subsBox = h('div', { class: 'subs-edit' });
+    var subsWrap = h('div', { class: 'field' },
+      h('span', { class: 'lbl' }, 'Sotto-obiettivi'),
+      subsBox,
+      h('button', { type: 'button', class: 'btn ghost', onclick: function () { subs.push({ id: null, title: '', count: 1, burn: 0 }); paintSubs(true); } }, '+ Aggiungi sotto-obiettivo'),
+      h('p', { class: 'hint' }, '«×» = quante volte nella settimana (es. 3 sessioni). Poi li segni fatti quando vuoi o li pianifichi in un giorno: compariranno nell\'elenco di quel giorno.'));
+
+    function paintSubs(focusLast) {
+      var isEx = typeC.get() === 'esercizio';
+      subsBox.replaceChildren.apply(subsBox, subs.map(function (sb, idx) {
+        var t = h('input', { type: 'text', placeholder: 'Es. Pagina home', value: sb.title, maxlength: '120', 'aria-label': 'Sotto-obiettivo ' + (idx + 1) });
+        t.addEventListener('input', function () { sb.title = t.value; });
+        var c = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '99', step: '1', value: sb.count, 'aria-label': 'Quante volte' });
+        c.addEventListener('input', function () { sb.count = c.value; });
+        var b = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '10', placeholder: '0', value: sb.burn || '', 'aria-label': 'Calorie spese' });
+        b.addEventListener('input', function () { sb.burn = b.value; });
+        return h('div', { class: 'sub-edit' }, t,
+          h('label', { class: 'mini' }, h('span', null, '×'), c),
+          isEx ? h('label', { class: 'mini' }, h('span', null, '🔥'), b) : null,
+          h('button', { type: 'button', class: 'ph-x static', 'aria-label': 'Rimuovi sotto-obiettivo', onclick: function () { subs.splice(idx, 1); if (!subs.length) subs.push({ id: null, title: '', count: 1, burn: 0 }); paintSubs(); } }, '×'));
+      }));
+      if (focusLast) { var all = subsBox.querySelectorAll('input[type=text]'); if (all.length) all[all.length - 1].focus(); }
+    }
+    function paintWeek() {
+      var w = L.startOfWeek(fWeek.value || g.week);
+      weekNote.textContent = 'Settimana dal ' + fmtDM.format(L.fromISO(w)) + ' al ' + fmtDM.format(L.fromISO(L.addDays(w, 6))) + '.';
+    }
+    function onKind(k) { amountBox.hidden = k !== 'amount'; subsWrap.hidden = k !== 'list'; }
+    function onType(t) { document.body.dataset.sec = t; if (subsBox) paintSubs(); }
+    fWeek.addEventListener('change', paintWeek); fWeek.addEventListener('input', paintWeek);
+
+    function onSave() {
+      var title = fTitle.value.trim();
+      if (!title) { toast('Scrivi un titolo'); fTitle.focus(); return; }
+      var kind = kindC.get();
+      var ng = L.makeGoal({
+        id: g.id, created: g.created, title: title, type: typeC.get(), week: fWeek.value || g.week, kind: kind,
+        target: fTarget.value, unit: fUnit.value, days: g.days,
+        subs: subs.map(function (x) { return { id: x.id || undefined, title: x.title, count: x.count, burn: x.burn }; })
+      });
+      if (kind === 'amount' && !(ng.target > 0)) { toast('Imposta un obiettivo maggiore di zero'); fTarget.focus(); return; }
+      if (kind === 'list' && !ng.subs.length) { toast('Aggiungi almeno un sotto-obiettivo'); return; }
+      var idx = state.goals.findIndex(function (x) { return x.id === ng.id; });
+      if (idx >= 0) state.goals[idx] = ng; else state.goals.push(ng);
+      L.syncGoalItems(state, ng).forEach(function (r) { r.photos.forEach(dropPhoto); });
+      // fa vedere subito l'obiettivo: sezione giusta e settimana giusta
+      ui.sec = ng.type;
+      if (L.startOfWeek(ui.date) !== ng.week) { var t = todayISO(); ui.date = (t >= ng.week && t <= L.addDays(ng.week, 6)) ? t : ng.week; }
+      persist(); closeSheet(); render();
+      toast(isNew ? 'Obiettivo creato' : 'Obiettivo aggiornato');
+    }
+    async function onDelete() {
+      var ok = await choose('Eliminare l\'obiettivo «' + g.title + '»? I sotto-obiettivi già completati restano nell\'elenco dei giorni.', [{ label: 'Elimina', value: 'yes', kind: 'danger' }, { label: 'Annulla', value: null, kind: 'ghost' }]);
+      if (!ok) return;
+      L.removeGoal(state, g.id).forEach(function (r) { r.photos.forEach(dropPhoto); });
+      persist(); closeSheet(); render();
+    }
+    function onCopy() {
+      var n = L.copyGoalToNextWeek(state, g.id);
+      if (!n) return;
+      persist(); closeSheet(); render();
+      toast('Copiato nella settimana dal ' + fmtDM.format(L.fromISO(n.week)));
+    }
+
+    openSheet(h('div', null,
+      h('h2', null, isNew ? 'Nuovo obiettivo settimanale' : 'Modifica obiettivo'),
+      h('div', { class: 'field' }, typeC.el),
+      field('Titolo', fTitle),
+      h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Tipo di obiettivo'), kindC.el),
+      field('Settimana (scegli un giorno qualsiasi)', fWeek, weekNote),
+      amountBox,
+      subsWrap,
+      h('div', { class: 'actions' },
+        isNew ? null : h('button', { type: 'button', class: 'btn danger', onclick: onDelete }, 'Elimina'),
+        isNew ? null : h('button', { type: 'button', class: 'btn', onclick: onCopy }, 'Copia a settimana dopo'),
+        h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn ghost', onclick: closeSheet }, 'Annulla'),
+        h('button', { type: 'button', class: 'btn primary', onclick: onSave }, 'Salva'))));
+    document.body.dataset.sec = g.type;
+    onKind(kindC.get()); paintSubs(); paintWeek();
+    if (isNew) setTimeout(function () { try { fTitle.focus(); } catch (e) { /* ignore */ } }, 50);
+  }
+
+  /* =========================================================
      Impostazioni
      ========================================================= */
   function openSettings() {
@@ -1010,7 +1409,8 @@
     openSheet(h('div', null,
       h('h2', null, 'Impostazioni'),
       h('section', { class: 'set-sec' }, h('h3', null, 'Obiettivo giornaliero (cibo)'),
-        h('div', { class: 'row2' }, field('Calorie (kcal)', kcal), field('Proteine (g)', prot))),
+        h('div', { class: 'row2' }, field('Calorie base (kcal)', kcal), field('Proteine (g)', prot)),
+        h('p', { class: 'hint' }, 'Le kcal spese dagli esercizi completati si sommano alle calorie base del giorno (es. 1650 + 300 = 1950).')),
       h('section', { class: 'set-sec' }, h('h3', null, 'Attività non svolte'),
         field('Impegni ed esercizi non completati: riporta', roll),
         h('p', { class: 'hint' }, 'I pasti e le serie ripetute non vengono riportati.')),

@@ -33,6 +33,26 @@ poi apri `http://localhost:8000` (il PIN, il service worker e le notifiche richi
 - **Ripetizioni**: ogni giorno o ogni settimana.
 - **Backup**: Impostazioni → Esporta/Importa (JSON con le foto).
 
+## Novità 1.1
+- **Kcal spese negli esercizi**: ogni esercizio ha un campo «Calorie spese». Quando lo completi (o lo porti a una %, in proporzione) si somma alle calorie base del giorno in *Cibo*: 1650 base + 300 = 1950 kcal, proteine invariate. La scheda Cibo mostra anche quanto resterebbe con tutto il pianificato.
+- **Obiettivi settimanali** (blocco «🎯 Obiettivi della settimana» sotto la lista, in ogni sezione; «+ Nuovo»):
+  - *Quantità* (es. 70.000 passi): inserisci il totale di ogni giorno come preferisci (20.000 un giorno, 5.000 un altro); vedi progresso e quanto manca.
+  - *Sotto-obiettivi*: es. «Sessione 50 min ×3» e «Sessione 15 min ×3», oppure «Pagina home», «Rifacimento credits», «Bug fix». Li segni fatti quando vuoi (compaiono nell'elenco del giorno con 🎯) oppure li pianifichi in un giorno con 📅. Per gli esercizi puoi dare 🔥 kcal a ciascun sotto-obiettivo.
+  - Le settimane vanno da lunedì a domenica; «Copia a settimana dopo» ripropone l'obiettivo. Le voci collegate non vengono riportate dal riporto automatico.
+- I dati della versione 1.0 si migrano da soli.
+
+## Novità 1.2 — Progressi
+Quarta scheda **📊 Progressi**, con vista Giorno / Settimana / Mese (frecce per scorrere i periodi). Si ricalcola da sola a ogni modifica: aggiungere, spuntare o rimuovere voci cambia subito i numeri.
+- Riepilogo: attività svolte (impegni + esercizi), giorni di fila, voci in programma, kcal spese, obiettivi completati.
+- Tre riquadri: impegni, esercizi, cibo (kcal medie rispetto al budget).
+- Grafici a colonne per giorno (attività svolte; kcal mangiate con la lineetta del budget). Tocca una colonna per aprire quel giorno.
+- Alimentazione: media kcal e proteine, giorni nel budget, giorni con proteine raggiunte, totali.
+- Obiettivi settimanali della settimana o del mese, con avanzamento.
+Le percentuali contano solo le voci fino a oggi; quelle future figurano come «in programma».
+
+## Aggiornare da 1.0 / 1.1
+Sovrascrivi `logic.js`, `app.js`, `style.css`, `sw.js`, `README.md` nel repository, poi commit e push. Apri l'app due volte per ricevere la nuova versione (la prima volta mostra ancora la vecchia dalla cache).
+
 ## Limiti da conoscere
 - **Sveglie**: con l'app aperta o da poco in background arrivano puntuali; con l'app chiusa Android può ritardarle o non consegnarle (limite delle web app). Per un avviso sicuro usa "Aggiungi al calendario (.ics)" nella scheda della voce.
 - **Foto**: una web app non può leggere automaticamente una cartella: le foto si scelgono dalla galleria e vengono copiate nell'app.
