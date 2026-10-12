@@ -1,0 +1,3 @@
+agenda-backup-*.json
+*.ics
+.DS_Store
