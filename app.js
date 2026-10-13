@@ -3,8 +3,10 @@
 (function () {
   'use strict';
   var L = window.Logic;
-  var VERSION = '1.5.0';
+  var VERSION = '1.5.1';
   var ChatBridge = window.AgendaChatBridge;
+  var StateSync = window.AgendaStateSync;
+  var Daily = window.AgendaDailyReminder;
 
   /* =========================================================
      Utilità DOM
@@ -81,17 +83,63 @@
   var KEY = 'agenda.state.v1';
   var META_KEY = 'agenda.meta.v1';
   var state, meta;
-
+  var lastSavedRaw = null, lastSavedState = null;
+  function cloneState(st) { return JSON.parse(JSON.stringify(st)); }
+  function rememberSnapshot(st, raw) {
+    lastSavedRaw = raw;
+    lastSavedState = cloneState(st);
+  }
   function loadState() {
     try {
       var raw = localStorage.getItem(KEY);
-      if (raw) return L.migrate(JSON.parse(raw));
+      var next = raw ? L.migrate(JSON.parse(raw)) : L.emptyState();
+      rememberSnapshot(next, raw);
+      return next;
     } catch (e) { console.error(e); }
-    return L.emptyState();
+    var blank = L.emptyState(); rememberSnapshot(blank, null); return blank;
   }
-  function persist() {
-    try { localStorage.setItem(KEY, JSON.stringify(state)); }
-    catch (e) { toast('Impossibile salvare: spazio esaurito?', 4000); }
+  /* Salvataggio immediato: prima concilia le variazioni fra schede.
+     Non effettua mai sovrascritture silenziose su record già aggiornati. */
+  function persist(force) {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!force && raw !== lastSavedRaw) {
+        var current = raw ? L.migrate(JSON.parse(raw)) : L.emptyState();
+        var result = StateSync.merge(lastSavedState || L.emptyState(), state, current);
+        if (result.conflicts.length) {
+          var yes = window.confirm('L’Agenda è stata modificata in un’altra scheda. ' +
+            result.conflicts.length + ' campi sono in conflitto.\n\nOK: mantieni le modifiche di questa schermata sui campi in conflitto; ' +
+            'Annulla: carica i dati più recenti senza sovrascriverli.');
+          if (!yes) {
+            state = current; rememberSnapshot(current, raw);
+            toast('Caricata la versione più recente. Modifica locale non applicata.', 6000);
+            return false;
+          }
+        }
+        state = L.migrate(result.state);
+      }
+      var nextRaw = JSON.stringify(state);
+      localStorage.setItem(KEY, nextRaw);
+      rememberSnapshot(state, nextRaw);
+      return true;
+    } catch (e) {
+      console.error(e);
+      toast('Salvataggio NON riuscito: controlla lo spazio e fai un backup', 6000);
+      return false;
+    }
+  }
+  function refreshExternalState() {
+    if (!state || !lastSavedState) return;
+    var raw;
+    try { raw = localStorage.getItem(KEY); } catch (e) { return; }
+    if (raw === lastSavedRaw) return;
+    // Non rimpiazza un modulo aperto: le sue modifiche saranno conciliate al salvataggio.
+    if (!$('#sheet').hidden || !$('#dialog').hidden || locked) {
+      toast('Agenda modificata altrove. Le modifiche verranno controllate prima di salvare.', 4500);
+      return;
+    }
+    state = loadState(); render();
+    toast('Agenda aggiornata con le modifiche dell’altra scheda');
   }
   function defaultMeta() { return { pin: null, firstRunDone: false, fired: {}, fails: { n: 0, until: 0 } }; }
   function loadMeta() {
@@ -319,6 +367,9 @@
     main.replaceChildren.apply(main, ui.sec === 'home' ? homeView() : ui.sec === 'stats' ? statsView() : ui.view === 'week' ? weekView() : dayView());
     try { window.scrollTo(0, y); } catch (e) { /* ignore */ }
     histReconcile();
+    refreshDailyRecordOnCompletion();
+    syncDailyBanner();
+    checkDailyReminder();
   }
 
   function renderHeader() {
@@ -481,11 +532,16 @@
       statTile('esercizio', st.esercizio, st.esercizio.total ? st.esercizio.done + '/' + st.esercizio.total : '–'),
       statTile('cibo', { pct: f.avgGoalKcal ? Math.min(100, Math.round(f.avgKcal / f.avgGoalKcal * 100)) : null }, f.activeDays ? 'media ' + nf.format(f.avgKcal) + ' kcal' : '–')));
 
+    // Progetti con task figli effettivamente assegnati; non con il numero teorico di sotto-obiettivi.
+    var projects = st.goals.filter(function (x) { return x.goal.kind === 'list'; });
+    if (projects.length) out.push(projectStatusBlock(projects, false));
+
     if (P === 'day') {
       var n = L.nutrition(state, ui.pdate);
       if (n.eaten.kcal || n.planned.kcal || n.burned) out.push(h('section', { class: 'card nutri', style: '--sec: var(--c-cibo)' },
-        h('h3', { class: 'card-h' }, 'Alimentazione'), metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal, (n.burned ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi' : null)),
-        metric('Proteine', 'g', n.eaten.protein, n.planned.protein, n.goal.protein)));
+        h('h3', { class: 'card-h' }, 'Alimentazione'), metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal, (n.burned ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi e passi' : null)),
+        metric('Proteine', 'g', n.eaten.protein, n.planned.protein, n.goal.protein),
+        n.steps ? h('p', { class: 'hint' }, '🚶 ' + nf.format(n.steps) + ' passi · +' + nf.format(n.stepsBurned) + ' kcal stimate da camminata') : null));
     } else {
       out.push(h('section', { class: 'card' },
         h('h3', { class: 'card-h' }, 'Attività svolte per giorno'), activityChart(st),
@@ -521,6 +577,20 @@
     }
     return out;
   }
+  function projectStatusBlock(projectRows, compact) {
+    var block = h('section', { class: 'card project-status' },
+      h('h3', { class: 'card-h' }, '🗂 Progetti · task assegnati'),
+      h('p', { class: 'hint project-hint' }, 'Avanzamento calcolato sui task giornalieri collegati al progetto, non sui task teorici ancora da pianificare.'));
+    projectRows.forEach(function (x) {
+      var g = x.goal, p = L.projectProgress(state, g);
+      block.append(h('button', { type: 'button', class: 'project-row',
+        onclick: function () { ui.sec = g.type; ui.date = g.week; ui.view = 'week'; render(); } },
+        h('div', { class: 'project-row-head' }, h('span', { class: 'project-name' }, g.title), h('strong', null, p.pct + '%')),
+        h('div', { class: 'project-progress' }, h('i', { style: 'width:' + p.pct + '%' })),
+        h('span', { class: 'project-counter' }, p.done + '/' + p.total + ' task completati' + (p.total ? '' : ' · Nessun task giornaliero assegnato'))));
+    });
+    return block;
+  }
   function statRow(label, value, sub) {
     return h('div', { class: 'stat-row' }, h('span', { class: 'sr-l' }, label), h('span', { class: 'sr-v' }, h('b', null, value), sub ? h('small', null, sub) : null));
   }
@@ -554,6 +624,7 @@
     if (st.burned) bits.push(h('span', { class: 'chip-s' }, icon('esercizio'), nf.format(st.burned) + ' kcal spese'));
     if (bits.length) sum.append(h('div', { class: 'chips-s' }, bits));
     out.push(sum);
+    out.push(dailyReminderHomeCard());
 
     // prossime attività di oggi
     var todo = L.itemsFor(state, 'impegno', t).concat(L.itemsFor(state, 'esercizio', t))
@@ -572,6 +643,10 @@
         h('button', { type: 'button', class: 'link', onclick: function () { goToDay('cibo', t); } }, 'Apri')),
       nutritionCard(t)));
 
+    // Progressi dei task parent della settimana anche nella home.
+    var projectRows = state.goals.filter(function (g) { return g.week === L.startOfWeek(t) && g.kind === 'list'; })
+      .map(function (g) { return { goal: g }; });
+    if (projectRows.length) out.push(projectStatusBlock(projectRows, true));
     // obiettivi della settimana (tutte le sezioni)
     var gl = [];
     ['impegno', 'esercizio', 'cibo'].forEach(function (k) { L.goalsFor(state, k, t).forEach(function (g) { gl.push(g); }); });
@@ -637,12 +712,13 @@
         h('div', { class: 'nutri-foot' }, h('button', { type: 'button', class: 'link', onclick: openSettings }, 'Imposta obiettivo')));
       return card;
     }
-    var note = (n.burned || n.burnPlanned) ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi svolti' : null;
+    var note = (n.burned || n.burnPlanned) ? 'Base ' + nf.format(n.base) + ' + ' + nf.format(n.burned) + ' da esercizi e passi' : null;
     card.append(metric('Calorie', 'kcal', n.eaten.kcal, n.planned.kcal, n.goal.kcal, note));
     card.append(metric('Proteine', 'g', n.eaten.protein, n.planned.protein, n.goal.protein));
+    if (n.steps) card.append(h('p', { class: 'hint steps-kcal' }, '🚶 ' + nf.format(n.steps) + ' passi registrati → +' + nf.format(n.stepsBurned) + ' kcal stimate nel budget del giorno'));
     if (n.planned.kcal > n.eaten.kcal || n.planned.protein > n.eaten.protein || n.burnPlanned > n.burned) {
       var parts = ['pasti ' + nf.format(n.planned.kcal) + ' kcal · ' + nf.format(n.planned.protein) + ' g'];
-      if (n.burnPlanned > 0) parts.push('esercizi +' + nf.format(n.burnPlanned) + ' kcal');
+      if (n.burnPlanned > 0) parts.push('attività e passi +' + nf.format(n.burnPlanned) + ' kcal');
       var k = n.remainingPlanned.kcal, pr = n.remainingPlanned.protein;
       card.append(h('p', { class: 'hint' }, 'Con tutto il pianificato (' + parts.join(', ') + ') ' +
         (k >= 0 ? 'resterebbero ' + nf.format(k) + ' kcal' : 'supereresti di ' + nf.format(-k) + ' kcal') +
@@ -695,6 +771,7 @@
       onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEditor(it); } }
     }, h('div', { class: 'title' + (done ? ' done' : '') }, it.title), h('div', { class: 'meta' }, tagsFor(it, compact)));
     var li = h('li', { class: 'item' + (compact ? ' compact' : '') }, h('div', { class: 'item-main' }, left, body));
+    if (it.photos.length) li.append(photoFeature(it, compact));
     if (!compact) {
       if (it.mode === 'percent') {
         li.append(h('input', {
@@ -707,15 +784,22 @@
           onchange: function (e) { it.progress = Number(e.target.value); persist(); render(); }
         }));
       }
-      if (it.photos.length) {
-        li.append(h('div', { class: 'thumbs' },
-          it.photos.slice(0, 4).map(function (id) {
-            var im = thumb(id, 'thumb'); im.addEventListener('click', function () { viewPhoto(id); }); return im;
-          }),
-          it.photos.length > 4 ? h('span', { class: 'more' }, '+' + (it.photos.length - 4)) : null));
-      }
     }
     return li;
+  }
+  function photoFeature(it, compact) {
+    var first = it.photos[0];
+    var photoBtn = function (id, main) {
+      return h('button', { type: 'button', class: main ? 'photo-primary' : 'photo-extra',
+        'aria-label': 'Apri foto allegata', onclick: function () { viewPhoto(id); } },
+        thumb(id, 'photo-cover'), main && it.photos.length > 1
+          ? h('span', { class: 'photo-count' }, '📷 ' + it.photos.length + ' foto') : null);
+    };
+    if (compact) return h('div', { class: 'photo-feature compact-feature' }, photoBtn(first, true));
+    var extras = it.photos.slice(1, 4);
+    return h('div', { class: 'photo-feature' }, photoBtn(first, true),
+      extras.length ? h('div', { class: 'photo-extras' }, extras.map(function (id) { return photoBtn(id, false); }),
+        it.photos.length > 4 ? h('span', { class: 'photo-more' }, '+' + (it.photos.length - 4)) : null) : null);
   }
 
   /* ---------- vista settimana ---------- */
@@ -726,7 +810,7 @@
         h('div', { class: 'sum-top' }, h('strong', null, 'Media giornaliera'),
           h('span', { class: 'pct' }, st.activeDays ? nf.format(st.avgKcal) + ' kcal' : '—')),
         h('p', { class: 'hint', style: 'margin-top:6px' }, st.activeDays
-          ? 'Proteine: ' + nf.format(st.avgProtein) + ' g/giorno · base ' + nf.format(state.settings.kcalGoal) + ' kcal (+ esercizi) e ' + nf.format(state.settings.proteinGoal) + ' g (su ' + st.activeDays + (st.activeDays === 1 ? ' giorno' : ' giorni') + ' con pasti consumati)'
+          ? 'Proteine: ' + nf.format(st.avgProtein) + ' g/giorno · base ' + nf.format(state.settings.kcalGoal) + ' kcal (+ esercizi e passi) e ' + nf.format(state.settings.proteinGoal) + ' g (su ' + st.activeDays + (st.activeDays === 1 ? ' giorno' : ' giorni') + ' con pasti consumati)'
           : 'Ancora nessun pasto consumato in questa settimana.')));
     } else if (st.total) {
       out.push(h('section', { class: 'card summary' },
@@ -1222,7 +1306,7 @@
         try { await putPhoto(ids[i], await dataURLToBlob(data.photos[ids[i]])); } catch (e) { /* salta la foto */ }
       }
       state = L.migrate(data.state);
-      maintain(); persist(); closeSheet(); render();
+      maintain(); persist(true); closeSheet(); render();
       toast('Backup importato');
     } catch (e) { console.error(e); toast('Importazione non riuscita', 3500); }
   }
@@ -1234,7 +1318,9 @@
     urlCache.forEach(function (u) { URL.revokeObjectURL(u); }); urlCache.clear();
     var keepGoals = state.settings;
     state = L.emptyState(); state.settings = keepGoals;
-    persist(); closeSheet(); render(); toast('Dati cancellati');
+    persist(true);
+    try { localStorage.removeItem(Daily.STATE_KEY); localStorage.removeItem(Daily.PREF_KEY); } catch (e) { /* ignore */ }
+    closeDailyNotification(todayISO()); closeSheet(); render(); toast('Dati cancellati');
   }
 
   /* =========================================================
@@ -1279,9 +1365,15 @@
       { label: 'Ripristina', value: 'yes' }, { label: 'Annulla', value: null, kind: 'ghost' }]);
     if (choice !== 'yes') return;
     try {
+      if (localStorage.getItem(KEY) !== old.after) {
+        state = loadState(); closeSheet(); render();
+        toast('Sono intervenute nuove modifiche: annullamento sospeso per non perderle.', 5500);
+        return;
+      }
       localStorage.setItem(KEY, old.before);
       localStorage.removeItem(CHAT_UNDO_KEY);
       state = L.migrate(JSON.parse(old.before));
+      rememberSnapshot(state, old.before);
       closeSheet(); render(); toast('Ultima importazione annullata');
     } catch (e) { console.error(e); toast('Ripristino non riuscito: memoria non disponibile', 4500); }
   }
@@ -1336,6 +1428,14 @@
         if (sure !== 'yes') return;
       }
       try {
+        var latestRaw = localStorage.getItem(KEY);
+        if (latestRaw !== lastSavedRaw) {
+          // Non applicare una preview costruita su dati ormai vecchi.
+          state = loadState();
+          toast('Agenda cambiata durante l’anteprima: controlla di nuovo le operazioni.', 5500);
+          void previewChatPlan(raw);
+          return;
+        }
         var result = ChatBridge.apply(state, parsed, ids);
         var before = JSON.stringify(state), after = JSON.stringify(result.state);
         var priorUndo = localStorage.getItem(CHAT_UNDO_KEY);
@@ -1348,6 +1448,7 @@
           throw e;
         }
         state = result.state;
+        rememberSnapshot(state, after);
         closeSheet(); render();
         toast('Agenda aggiornata: ' + (result.summary.add + result.summary.update + result.summary.delete) + ' operazioni, ' + result.summary.links + ' attività collegate', 5000);
       } catch (e) { console.error(e); toast('Non salvato: ' + e.message, 5500); }
@@ -1388,6 +1489,7 @@
           'Per gli obiettivi settimanali usa entity: \"goal\" e op: add/update/delete. Per add servono title, type, week, kind: \"list\" con subs:[{title,count,burn?}] oppure kind: \"amount\" con target e unit. ' +
           'Per collegare impegni GIA presenti, usa links:[{match:{id:\"ID_REALE\"},sub:\"Titolo identico a uno dei subs\"}] dentro l’operazione goal: non ricreare gli impegni. ' +
           'Per update di un obiettivo usa il suo ID reale; i subs sostituiscono la lista, mantenendo i vecchi ID dei titoli invariati. ' +
+          'Regola fondamentale: genera SOLO le differenze approvate rispetto al contesto, non ricostruire mai l’intera agenda e non sovrascrivere progressi o note degli altri impegni. ' +
           'Non modificare nulla che non abbiamo concordato. Preferisco un link diretto cliccabile verso https://erasmdif.github.io/agenda_PWA/#agenda-import= seguito dal JSON codificato con encodeURIComponent; ' +
           'per link lunghi usa #agenda-import-z= seguito da gzip(JSON in UTF-8) codificato base64url senza padding. Mostra anche il JSON come alternativa. ' +
           'Il link apre un’ANTEPRIMA da confermare nella PWA: non scrive direttamente da ChatGPT, non usa account, API né backend.';
@@ -1432,6 +1534,7 @@
       h('section', { class: 'set-sec chat-section' },
         h('h3', null, '2 · Importa il piano concordato'),
         h('p', { class: 'hint' }, 'Da ChatGPT tocca «Apri modifiche in Agenda»: questa pagina mostra automaticamente l’anteprima del link. Usa Incolla JSON soltanto come alternativa. Attenzione: browser e PWA installata potrebbero avere memorie locali diverse.'),
+        h('p', { class: 'hint chat-delta-tip' }, 'Aggiornamento incrementale: chiedi soltanto add per nuove attività, update con l’ID reale e i soli campi modificati. Le attività non nominate restano intatte; delete soltanto su richiesta esplicita.'),
         input, error,
         h('div', { class: 'btns' },
           h('button', { type: 'button', class: 'btn primary', onclick: function () { previewChatPlan(input.value); } }, 'Controlla e importa'),
@@ -1527,6 +1630,7 @@
     locked = true;
     closeOverlays();
     $('#app').hidden = true;
+    syncDailyBanner();
     var pad = pinPad({ title: 'Agenda bloccata', sub: 'Inserisci il PIN', cancel: false });
     for (;;) {
       var pin = await pad.next();
@@ -1575,6 +1679,193 @@
   }
 
   /* =========================================================
+     Riepilogo giornaliero alle 15:00 (impegni + esercizi)
+     Archiviazione autonoma: mai inserito nel JSON condiviso con ChatGPT.
+     ========================================================= */
+  var dailyCheckBusy = false;
+  function readDailyJSON(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); }
+    catch (e) { return null; }
+  }
+  function dailyPref() { return Daily.preferences(readDailyJSON(Daily.PREF_KEY)); }
+  function dailyRecord() { return Daily.normalize(readDailyJSON(Daily.STATE_KEY), todayISO()); }
+  function saveDailyPref(p) {
+    try { localStorage.setItem(Daily.PREF_KEY, JSON.stringify(Daily.preferences(p))); return true; }
+    catch (e) { toast('Non riesco a salvare le preferenze di promemoria', 5000); return false; }
+  }
+  function saveDailyRecord(r) {
+    try { localStorage.setItem(Daily.STATE_KEY, JSON.stringify(r)); return true; }
+    catch (e) { toast('Non riesco a salvare il rinvio del promemoria', 5000); return false; }
+  }
+  function dailyInfo() { return Daily.status(state, dailyPref(), dailyRecord(), new Date()); }
+  function dailyTag(date) { return 'agenda-daily-' + date; }
+  function dailySummary(items) {
+    var n = items.length;
+    return n + (n === 1 ? ' attività da completare' : ' attività da completare');
+  }
+  function dailyBody(items, pref) {
+    if (!pref.showTitles) return 'Apri l’Agenda per vedere cosa manca, allenamento compreso.';
+    var txt = items.slice(0, 3).map(function (i) { return (i.type === 'esercizio' ? '🏃 ' : '• ') + i.title; }).join(' · ');
+    return (txt.length > 180 ? txt.slice(0, 177) + '…' : txt) + (items.length > 3 ? ' · e altre ' + (items.length - 3) : '');
+  }
+  async function closeDailyNotification(date) {
+    try {
+      var reg = ('serviceWorker' in navigator) ? await navigator.serviceWorker.getRegistration() : null;
+      if (reg && reg.getNotifications) {
+        var notices = await reg.getNotifications({ tag: dailyTag(date) });
+        notices.forEach(function (n) { n.close(); });
+      }
+    } catch (e) { /* Il browser può non supportare la chiusura. */ }
+  }
+  function applyDailyChoice(action, requestedDate) {
+    var now = new Date(), date = todayISO();
+    if (requestedDate && requestedDate !== date) return false; // ignora notifiche dei giorni precedenti
+    var inf = dailyInfo();
+    if (action === 'open') { openDailyDetails(); return true; }
+    if (action !== 'ok' && action !== 'snooze') return false;
+    if (!inf.pref.enabled || inf.dismissed) return false;
+    var r = action === 'ok' ? Daily.accept(inf.record, date) : Daily.snooze(inf.record, date, now);
+    if (!saveDailyRecord(r)) return false;
+    closeDailyNotification(date);
+    if (action === 'ok') toast('Promemoria chiuso per oggi');
+    else toast('Te lo ricorderò alle ' + Daily.timeLabel(r.nextAt) + ' (se l’app sarà attiva)', 4200);
+    var sheet = $('#sheet');
+    if (sheet && !sheet.hidden && sheet.querySelector('.daily-detail')) closeSheet();
+    render();
+    return true;
+  }
+  function exportDailyCalendarAlarm() {
+    // Promemoria generico: solo il calendario nativo può avvisare con PWA chiusa,
+    // ma NON conosce quali attività sono rimaste (né segue OK/rinvio nella PWA).
+    var date = todayISO().replace(/-/g, '');
+    var url = (location.origin && location.origin !== 'null' ? location.origin : 'https://erasmdif.github.io') + '/agenda_PWA/';
+    function escapeICS(value) { return String(value).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;'); }
+    var lines = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Agenda PWA//Promemoria 15//IT',
+      'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+      'UID:daily-1500-agenda@local.pwa',
+      'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''),
+      'DTSTART:' + date + 'T150000', 'DURATION:PT5M',
+      'RRULE:FREQ=DAILY', 'SUMMARY:Controlla l’Agenda alle 15',
+      'DESCRIPTION:' + escapeICS('Apri la tua Agenda per rivedere gli impegni e gli allenamenti mancanti: ' + url),
+      'URL:' + url,
+      'BEGIN:VALARM', 'TRIGGER:PT0M', 'ACTION:DISPLAY',
+      'DESCRIPTION:Controlla impegni e allenamento di oggi',
+      'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'
+    ];
+    download(new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' }), 'agenda-sveglia-15.ics');
+    toast('Promemoria .ics creato: importalo nel calendario del telefono', 4500);
+  }
+  function dailyReminderHomeCard() {
+    var d = dailyInfo();
+    if (!d.pref.enabled) return null;
+    var text;
+    if (!d.count) text = 'Tutto completato · nessun avviso necessario';
+    else if (d.dismissed) text = 'Chiuso per oggi · ' + d.count + ' ancora da fare';
+    else if (d.awaiting) text = 'Promemoria in attesa di risposta';
+    else if (d.record.nextAt) text = 'Rinviato alle ' + Daily.timeLabel(d.nextAt);
+    else text = 'Controllo alle 15:00';
+    return h('section', { class: 'card daily-card' },
+      h('div', { class: 'daily-card-line' }, h('span', { class: 'daily-card-icon', 'aria-hidden': 'true' }, '🔔'),
+        h('div', { class: 'daily-card-copy' }, h('strong', null, 'Riepilogo delle 15:00'),
+          h('span', null, text)),
+        h('button', { type: 'button', class: 'btn', onclick: openDailyDetails }, 'Apri')));
+  }
+  function openDailyDetails() {
+    if (locked) return;
+    var d = dailyInfo();
+    var items = d.items;
+    var content = h('div', { class: 'daily-detail' },
+      plainHero('Promemoria', 'Riepilogo delle 15:00', 'bell', 'home'),
+      h('p', { class: 'hint' }, 'Gli impegni e gli allenamenti incompleti di oggi. Le attività completate non vengono mostrate.'),
+      h('h3', { class: 'daily-detail-title' }, items.length ? dailySummary(items) : 'Tutto completato!'),
+      h('ul', { class: 'daily-detail-list' }, items.map(function (it) {
+        return h('li', null, h('span', { class: 'daily-detail-kind' }, it.type === 'esercizio' ? '🏃' : '🗓️'),
+          h('span', null, h('strong', null, it.title),
+            it.time ? h('small', null, 'Ore ' + it.time) : null,
+            it.mode === 'percent' && it.progress > 0 ? h('small', null, it.progress + '% completato') : null));
+      })),
+      (d.pref.enabled && items.length && !d.dismissed) ? h('div', { class: 'daily-detail-buttons' },
+        h('button', { type: 'button', class: 'btn primary', onclick: function () { applyDailyChoice('ok'); } }, 'OK · basta per oggi'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { applyDailyChoice('snooze'); } }, 'Ricordamelo tra un’ora')) : null,
+      d.dismissed ? h('p', { class: 'hint' }, 'Hai scelto OK: nessun altro riepilogo fino a domani.') : null,
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn ghost', onclick: closeSheet }, 'Chiudi')));
+    openSheet(content);
+  }
+  function syncDailyBanner() {
+    var root = $('#alerts'); if (!root || !state) return;
+    var old = root.querySelector('.daily-reminder-alert');
+    if (old) old.remove();
+    var d = dailyInfo();
+    if (!d.awaiting || locked || (meta && meta.pin && $('#app').hidden)) return;
+    var itemList = d.items.slice(0, 4).map(function (it) {
+      return (it.type === 'esercizio' ? '🏃 ' : '• ') + it.title + (it.time ? ' (' + it.time + ')' : '');
+    });
+    var el = h('div', { class: 'alert daily-reminder-alert', role: 'alert' },
+      h('div', { class: 'daily-alert-header' },
+        h('strong', null, '🔔 Riepilogo delle 15:00 · ' + dailySummary(d.items)),
+        h('span', null, 'Cosa manca oggi:')),
+      h('ul', { class: 'daily-alert-list' }, itemList.map(function (x) { return h('li', null, x); })),
+      d.count > 4 ? h('p', { class: 'daily-alert-more' }, '+ altre ' + (d.count - 4) + ' attività') : null,
+      h('div', { class: 'daily-alert-actions' },
+        h('button', { type: 'button', class: 'btn', onclick: function () { applyDailyChoice('ok'); } }, 'OK'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { applyDailyChoice('snooze'); } }, 'Ricordamelo tra un’ora')));
+    root.append(el);
+  }
+  function refreshDailyRecordOnCompletion() {
+    var d = dailyInfo();
+    if (d.count || !d.record.awaiting) return;
+    saveDailyRecord(Daily.cleared(d.record, d.date));
+    closeDailyNotification(d.date);
+  }
+  function checkDailyReminder() {
+    if (dailyCheckBusy || !state || (meta && meta.pin && $('#app').hidden)) return;
+    dailyCheckBusy = true;
+    var job = async function () {
+      var fired = null;
+      var claim = function () {
+        var d = dailyInfo();
+        if (!d.count && d.record.awaiting) {
+          saveDailyRecord(Daily.cleared(d.record, d.date));
+          closeDailyNotification(d.date);
+          return;
+        }
+        if (!d.due) return;
+        var r = Daily.firing(d.record, d.date, new Date());
+        if (saveDailyRecord(r)) fired = d;
+      };
+      // Navigator Locks evita duplicati quando la PWA è aperta su due schede.
+      if (navigator.locks && navigator.locks.request) await navigator.locks.request('agenda-daily-reminder-check', claim);
+      else claim();
+      if (fired) {
+        if (navigator.vibrate) try { navigator.vibrate([180, 90, 180]); } catch (e) { /* ignore */ }
+        if (!document.hidden) beep();
+        var title = 'Agenda · ' + dailySummary(fired.items);
+        systemNotify(title, dailyBody(fired.items, fired.pref), dailyTag(fired.date), {
+          data: { agendaDaily: true, date: fired.date },
+          actions: [{ action: 'ok', title: 'OK' }, { action: 'snooze', title: 'Tra 1 ora' }]
+        });
+        if (ui.sec === 'home') render();
+      }
+      syncDailyBanner();
+    };
+    Promise.resolve().then(job).catch(function (e) { console.error('Promemoria 15:00', e); })
+      .finally(function () { dailyCheckBusy = false; });
+  }
+  function processDailyURLAction() {
+    try {
+      var url = new URL(window.location.href);
+      var action = url.searchParams.get('daily_action');
+      if (!action) return;
+      var date = url.searchParams.get('daily_date');
+      url.searchParams.delete('daily_action'); url.searchParams.delete('daily_date');
+      history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+      if (action === 'ok' || action === 'snooze') applyDailyChoice(action, date);
+      // Click sul corpo della notifica: apriamo la PWA, il riepilogo resta visibile.
+    } catch (e) { console.warn('Azione promemoria ignorata', e); }
+  }
+
+  /* =========================================================
      Notifiche e sveglie
      ========================================================= */
   function notifSupport() { return 'Notification' in window; }
@@ -1587,12 +1878,21 @@
     return Promise.resolve(Notification.permission);
   }
 
-  async function systemNotify(title, body, tag) {
+  async function systemNotify(title, body, tag, extras) {
     if (!notifSupport() || Notification.permission !== 'granted') return false;
     try {
       var reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
       if (reg && reg.showNotification) {
-        await reg.showNotification(title, { body: body, tag: tag, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', vibrate: [200, 100, 200], requireInteraction: true });
+        var opts = { body: body, tag: tag, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', vibrate: [200, 100, 200], requireInteraction: true };
+        if (extras && extras.data) opts.data = extras.data;
+        if (extras && extras.actions) opts.actions = extras.actions;
+        try { await reg.showNotification(title, opts); }
+        catch (err) {
+          // Alcuni browser supportano la notifica, ma non i pulsanti d'azione.
+          if (!opts.actions) throw err;
+          delete opts.actions;
+          await reg.showNotification(title, opts);
+        }
         return true;
       }
       new Notification(title, { body: body, tag: tag, icon: 'icons/icon-192.png' });
@@ -1651,6 +1951,7 @@
       movedToast(r.moved);
     }
     checkAlarms();
+    checkDailyReminder();
   }
 
   /* =========================================================
@@ -1754,6 +2055,7 @@
         h('button', { type: 'button', class: 'goal-title', 'aria-label': 'Modifica obiettivo ' + g.title, onclick: function () { openGoalEditor(g); } }, g.title, h('span', { class: 'edit-ico', 'aria-hidden': 'true' }, '✎')),
         h('span', { class: 'pct' }, p.pct + '%')),
       h('div', { class: 'goal-sum' }, summary + (p.complete ? ' ✓' : '')),
+      L.isStepsGoal(g) && p.total ? h('p', { class: 'step-goal-burn' }, '🚶 ≈ ' + nf.format(L.stepsKcal(p.total)) + ' kcal stimate sui passi registrati') : null,
       h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + p.pct + '%' })));
     card.append(p.kind === 'amount' ? amountBody(g, p, date) : h('div', { class: 'goal-body' }, g.subs.map(function (sb) { return subRow(g, sb, date); })));
     return card;
@@ -1763,11 +2065,13 @@
   function amountBody(g, p, date) {
     var tracked = Array.isArray(g.credits) && g.credits.length > 0;
     function creditedOn(d) {
-      if (!tracked) return g.days[d] || 0;
-      return Math.round(g.credits.reduce(function (sum, c) {
+      var manuallyRegistered = Number(g.days[d]) || 0;
+      if (!tracked) return manuallyRegistered;
+      // Totale coerente con la v1.5: passi inseriti direttamente e crediti dai task.
+      return Math.round((manuallyRegistered + g.credits.reduce(function (sum, c) {
         var it = state.items.find(function (x) { return x.id === c.itemId && x.gid === g.id && x.date === d; });
         return sum + (it ? c.quantity * it.progress / 100 : 0);
-      }, 0) * 100) / 100;
+      }, 0)) * 100) / 100;
     }
     var input = h('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '0', value: g.days[date] || '', 'aria-label': 'Totale di ' + dayWord(date) });
     input.addEventListener('change', function () { L.setAmount(g, date, input.value); persist(); render(); });
@@ -1787,7 +2091,9 @@
     return h('div', { class: 'goal-body' },
       tracked ? h('p', { class: 'hint' }, 'Avanzamento automatico dagli impegni collegati: completa le attività giornaliere per aggiornare questo obiettivo. Le attività al 50% contribuiscono per metà del loro valore.') :
         h('label', { class: 'dayentry' }, h('span', null, cap(dayWord(date)) + ': totale'), input, g.unit ? h('span', { class: 'unit' }, g.unit) : null),
-      strip, hint ? h('p', { class: 'hint' }, hint) : null);
+      strip, L.isStepsGoal(g) && creditedOn(date) ? h('p', { class: 'hint steps-kcal' },
+        'Circa ' + nf.format(L.stepsKcal(creditedOn(date))) + ' kcal nella giornata (stima fissa)') : null,
+      hint ? h('p', { class: 'hint' }, hint) : null);
   }
 
   // Sotto-obiettivo: si segna fatto oggi (o nel giorno selezionato) oppure si pianifica in un giorno.
@@ -1962,6 +2268,18 @@
       h('option', { value: 'today' }, 'A oggi'));
     roll.addEventListener('change', function () { s.rolloverMode = roll.value; persist(); toast('Vale dai prossimi riporti'); });
 
+    var dailySettings = dailyPref();
+    var dailyEnabled = h('input', { type: 'checkbox' }); dailyEnabled.checked = dailySettings.enabled;
+    dailyEnabled.addEventListener('change', function () {
+      var current = dailyPref(); current.enabled = dailyEnabled.checked;
+      if (saveDailyPref(current)) {
+        if (current.enabled) checkDailyReminder();
+        else { saveDailyRecord(Daily.cleared(dailyRecord(), todayISO())); closeDailyNotification(todayISO()); }
+        syncDailyBanner(); render();
+      }
+    });
+    var dailyTitles = h('input', { type: 'checkbox' }); dailyTitles.checked = dailySettings.showTitles;
+    dailyTitles.addEventListener('change', function () { var current = dailyPref(); current.showTitles = dailyTitles.checked; saveDailyPref(current); });
     var perm = notifSupport() ? Notification.permission : 'unsupported';
     var permText = { granted: 'Notifiche attive ✓', denied: 'Notifiche bloccate nelle impostazioni del sito', 'default': 'Notifiche non ancora attivate', unsupported: 'Notifiche non supportate da questo browser' }[perm];
     var notifBtns = [];
@@ -1990,10 +2308,20 @@
       plainHero('Impostazioni', 'La tua agenda', 'settings', 'home'),
       h('section', { class: 'set-sec' }, h('h3', null, 'Obiettivo giornaliero (cibo)'),
         h('div', { class: 'row2' }, field('Calorie base (kcal)', kcal), field('Proteine (g)', prot)),
-        h('p', { class: 'hint' }, 'Le kcal spese dagli esercizi completati si sommano alle calorie base del giorno (es. 1650 + 300 = 1950).')),
+        h('p', { class: 'hint' }, 'Le kcal degli esercizi svolti e dei passi registrati si sommano alla base. Passi: coefficiente fisso ~' + L.KCAL_PER_STEP.toFixed(3).replace('.', ',') + ' kcal/passo. Evita di contare due volte la stessa camminata come esercizio.')),
       h('section', { class: 'set-sec' }, h('h3', null, 'Attività non svolte'),
         field('Impegni ed esercizi non completati: riporta', roll),
         h('p', { class: 'hint' }, 'I pasti e le serie ripetute non vengono riportati.')),
+      h('section', { class: 'set-sec daily-settings' }, h('h3', null, 'Promemoria quotidiano · ore 15:00'),
+        h('label', { class: 'check' }, dailyEnabled, h('span', null, 'Controlla impegni ed esercizi incompleti ogni giorno alle 15:00')),
+        h('p', { class: 'hint' }, 'Alle 15:00 puoi rispondere OK (chiudi fino a domani) oppure Ricordamelo tra un’ora. I rinvii continuano solo se li richiedi e ci sono ancora attività incomplete.'),
+        h('label', { class: 'check daily-titles-option' }, dailyTitles, h('span', null, 'Mostra i titoli anche nella notifica di sistema')),
+        h('p', { class: 'hint' }, 'Per privacy, per impostazione predefinita la notifica mostra il numero di attività, mentre l’elenco completo è visibile nell’app.'),
+        h('div', { class: 'btns' },
+          h('button', { type: 'button', class: 'btn', onclick: openDailyDetails }, 'Controlla cosa manca oggi'),
+          h('button', { type: 'button', class: 'btn', onclick: exportDailyCalendarAlarm }, 'Promemoria calendario (.ics)')),
+        h('p', { class: 'hint' }, 'Opzionale: importa il file .ics nel calendario del telefono per un avviso giornaliero nativo alle 15:00, anche se la PWA è chiusa. Sarà generico e continuerà a suonare anche dopo OK o a giornata completata; disattivalo dal calendario quando non serve.'),
+        h('p', { class: 'hint' }, '⚠️ Senza un server push gli avvisi sono puntuali solo se l’app è attiva: con app chiusa o sospesa non è garantita una notifica alle 15:00. Il controllo viene recuperato alla riapertura.')),
       h('section', { class: 'set-sec' }, h('h3', null, 'Avvisi'),
         h('p', null, permText), h('div', { class: 'btns', style: 'margin-top:8px' }, notifBtns),
         h('p', { class: 'hint' }, 'Gli avvisi arrivano in modo affidabile con l\'app aperta o da poco in background. Per la massima puntualità usa "Aggiungi al calendario" nella scheda di una voce.')),
@@ -2048,11 +2376,26 @@
       } else {
         var away = hiddenAt ? (Date.now() - hiddenAt) / 1000 : 0;
         hiddenAt = 0;
+        refreshExternalState();
         if (meta.pin && !locked && away >= state.settings.autoLockSec) lockNow();
         else tick();
       }
     });
     window.addEventListener('hashchange', receiveChatLink);
+    window.addEventListener('pageshow', function () { refreshExternalState(); checkDailyReminder(); });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (event) {
+      var data = event.data || {};
+      if (data.type === 'agenda-daily-action') {
+        if (data.action === 'open') { if (!locked) openDailyDetails(); }
+        else applyDailyChoice(data.action, data.date);
+      }
+    });
+    window.addEventListener('storage', function (event) {
+      if (event.key === KEY) { refreshExternalState(); checkDailyReminder(); }
+      if (event.key === Daily.STATE_KEY || event.key === Daily.PREF_KEY) {
+        syncDailyBanner(); if (ui.sec === 'home') render();
+      }
+    });
     setInterval(tick, 20000);
   }
 
@@ -2061,6 +2404,7 @@
     applyTheme();
     registerSW(); bind(); bindHistory();
     receiveChatLink();
+    processDailyURLAction();
     if (meta.pin) {
       locked = false; $('#app').hidden = true;
       var first = maintain(); render();
@@ -2072,6 +2416,7 @@
       $('#app').hidden = false;
       movedToast(r.moved);
       checkAlarms();
+      checkDailyReminder();
       if (!meta.firstRunDone) await welcome();
       processChatLink();
     }

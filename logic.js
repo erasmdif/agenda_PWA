@@ -174,6 +174,41 @@
   function doneCount(items) { return items.filter(function (i) { return i.progress >= 100; }).length; }
 
   function round1(x) { return Math.round(x * 10) / 10; }
+  /* Stima calorica fissa per passo, pre-calibrata sul profilo concordato.
+     Il peso, l’altezza e l’età personali NON vengono inclusi nel codice
+     pubblicato su GitHub; resta solo il coefficiente approssimato.
+     Non è una misura clinica; evita doppio conteggio con altri esercizi. */
+  var KCAL_PER_STEP = 0.0381;
+  function isStepsGoal(goal) {
+    return !!(goal && goal.kind === 'amount' &&
+      (/^(passi|passo|step|steps)$/i.test(String(goal.unit || '').trim()) ||
+        (!String(goal.unit || '').trim() && /\bpassi\b/i.test(String(goal.title || '')))));
+  }
+  function stepsForDay(state, iso) {
+    // Gli obiettivi paralleli sono indicatori dello STESSO contapassi:
+    // scegliamo il valore massimo per evitare calorie duplicate.
+    var steps = 0;
+    state.goals.forEach(function (goal) {
+      if (isStepsGoal(goal) && goal.week <= iso && iso <= addDays(goal.week, 6)) {
+        // Nella v1.5 gli obiettivi a quantità possono ricevere anche accrediti
+        // dai task collegati. Manteniamoli: sono progressi effettivi, non pianificati.
+        var linked = (goal.credits || []).reduce(function (sum, credit) {
+          var item = state.items.find(function (it) {
+            return it.id === credit.itemId && it.gid === goal.id && it.date === iso;
+          });
+          return sum + (item ? num(credit.quantity) * num(item.progress) / 100 : 0);
+        }, 0);
+        steps = Math.max(steps, num(goal.days && goal.days[iso]) + linked);
+      }
+    });
+    return steps;
+  }
+  function stepsKcal(steps) { return Math.round(Math.max(0, num(steps)) * KCAL_PER_STEP); }
+  function projectProgress(state, goal) {
+    var items = state.items.filter(function (it) { return it.gid === goal.id; });
+    var done = doneCount(items), total = items.length;
+    return { done: done, total: total, pct: total ? Math.round(done / total * 100) : 0, complete: total > 0 && done === total };
+  }
   /* Budget del giorno = kcal base + kcal spese dagli esercizi svolti (in proporzione alla percentuale). */
   function nutrition(state, iso) {
     var meals = itemsFor(state, 'cibo', iso);
@@ -188,11 +223,15 @@
     itemsFor(state, 'esercizio', iso).forEach(function (e) {
       burned += (e.burn || 0) * e.progress / 100; burnPlanned += (e.burn || 0);
     });
-    burned = Math.round(burned); burnPlanned = Math.round(burnPlanned);
+    var exerciseBurned = Math.round(burned);
+    var steps = stepsForDay(state, iso), stepsBurned = stepsKcal(steps);
+    burned = exerciseBurned + stepsBurned;
+    burnPlanned = Math.round(burnPlanned) + stepsBurned;
     var base = state.settings.kcalGoal;
     var goal = { kcal: base + burned, protein: state.settings.proteinGoal };
     return {
       meals: meals, base: base, burned: burned, burnPlanned: burnPlanned,
+      steps: steps, stepsBurned: stepsBurned, exerciseBurned: exerciseBurned,
       goal: goal, planned: planned, eaten: eaten,
       remaining: { kcal: goal.kcal - eaten.kcal, protein: round1(goal.protein - eaten.protein) },
       remainingPlanned: { kcal: base + burnPlanned - planned.kcal, protein: round1(goal.protein - planned.protein) }
@@ -700,6 +739,7 @@
     emptyState: emptyState, makeItem: makeItem, migrate: migrate, toggle: toggle,
     makeRecurring: makeRecurring, materialize: materialize, removeItem: removeItem, rollover: rollover,
     itemsFor: itemsFor, completion: completion, doneCount: doneCount, nutrition: nutrition,
+    KCAL_PER_STEP: KCAL_PER_STEP, isStepsGoal: isStepsGoal, stepsForDay: stepsForDay, stepsKcal: stepsKcal, projectProgress: projectProgress,
     weekStats: weekStats, mealMemory: mealMemory,
     TODS: TODS, romeMinutes: romeMinutes, timeOfDay: timeOfDay,
     rangeOf: rangeOf, shiftPeriod: shiftPeriod, periodStats: periodStats, streak: streak,
